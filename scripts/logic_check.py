@@ -234,19 +234,25 @@ def check_header(lines: list[str], report: Report) -> str:
     return match.group(1).split("/")[0].strip() if match else ""
 
 
-def check_sections(lines: list[str], sections: dict[int, tuple[int, int, str]], report: Report) -> None:
-    for num, keywords in REQUIRED_SECTIONS.items():
+def check_sections(lines: list[str], sections: dict[int, tuple[int, int, str]], report: Report, uml: bool = False) -> None:
+    required = dict(REQUIRED_SECTIONS)
+    if uml:
+        required[11] = ("模型规格",)
+    for num, keywords in required.items():
         if num not in sections:
             report.fail("章节", f"缺少 `## {num}. {keywords[0]}`", 0)
             continue
         title = sections[num][2]
-        if not any(k in title for k in keywords):
+        allowed = keywords
+        if uml and num == 3:
+            allowed = ("边清单", "关系清单", "消息清单")
+        if not any(k in title for k in allowed):
             report.fail("章节", f"`## {num}.` 标题应包含“{keywords[0]}”，实际为“{title}”", sections[num][0] + 1)
         else:
             report.ok("章节", f"{num}. {title}", sections[num][0] + 1)
 
 
-def check_steps(steps: dict[str, dict[str, Any]], report: Report) -> None:
+def check_steps(steps: dict[str, dict[str, Any]], report: Report, uml: bool = False) -> None:
     if not steps:
         report.fail("构建步骤", "没有找到 `### S1 · ...` 形式的步骤")
         return
@@ -258,7 +264,7 @@ def check_steps(steps: dict[str, dict[str, Any]], report: Report) -> None:
         if not step["node"]:
             report.fail(f"{sid} 节点引用", "缺少 `- 节点: Nx (type)`", line)
         else:
-            if step["node"] in seen_nodes and step["section"] == 4:
+            if step["node"] in seen_nodes and step["section"] == 4 and not uml:
                 report.warn(f"{sid} 节点复用", f"节点 {step['node']} 已在 {seen_nodes[step['node']]} 出现", line)
             seen_nodes[step["node"]] = sid
 
@@ -306,7 +312,7 @@ def check_steps(steps: dict[str, dict[str, Any]], report: Report) -> None:
         if is_end and step["targets"]:
             report.warn(f"{sid} 结束步骤", "结束步骤不应再有下一步", line)
 
-        if not is_decision and not is_or and not is_end and len(step["targets"]) > 1:
+        if not is_decision and not is_or and not is_end and len(step["targets"]) > 1 and not uml:
             report.warn(f"{sid} 多去向", "非判断步骤出现多个去向，确认不是把判断写成了处理", line)
 
     # Target existence.
@@ -400,6 +406,36 @@ HINTS: dict[str, tuple[tuple[str, ...], str]] = {
                "排序步骤应说明排序键与方向"),
     "OR": (("或", "分支", "选择", "任一"),
            "或分支应给每条分支加标签"),
+    "CLASS": (("类", "属性", "操作", "职责", "class"),
+              "类步骤应说明属性/操作/职责"),
+    "IFACE": (("接口", "协议", "方法", "interface"),
+              "接口步骤应说明方法契约"),
+    "ENUM": (("枚举", "常量", "值", "enum"),
+             "枚举步骤应说明取值集合"),
+    "ACTOR": (("参与者", "用户", "角色", "actor"),
+              "参与者步骤应说明外部角色"),
+    "USECASE": (("用例", "场景", "功能", "use case"),
+                "用例步骤应说明触发场景与验收"),
+    "COMPONENT": (("组件", "模块", "服务", "component"),
+                  "组件步骤应说明职责与依赖"),
+    "SERVICE": (("服务", "部署", "端口", "service"),
+                "服务步骤应说明部署与端口"),
+    "STATE": (("状态", "迁移", "事件", "state"),
+              "状态步骤应说明事件与迁移"),
+    "ENTITY": (("实体", "表", "字段", "entity"),
+               "实体步骤应说明字段与主键"),
+    "MESSAGE": (("消息", "发送", "接收", "调用", "message"),
+                "消息步骤应说明发送者、接收者与顺序"),
+    "RELATION": (("关系", "关联", "组合", "聚合", "继承", "依赖", "relation"),
+                 "关系步骤应说明实现方式"),
+    "TRANSITION": (("迁移", "事件", "守卫", "动作", "transition"),
+                   "迁移步骤应说明事件、守卫与动作"),
+    "TABLE": (("表", "字段", "主键", "索引", "table"),
+              "数据表步骤应说明字段与主键"),
+    "API": (("API", "端点", "请求", "响应", "endpoint"),
+            "API 步骤应说明请求/响应契约"),
+    "REPO": (("仓储", "repository", "查询", "保存", "写入"),
+             "仓储步骤应说明查询与保存接口"),
 }
 
 
@@ -500,7 +536,209 @@ def load_flow_json(text: str) -> tuple[dict[str, Any] | None, int]:
     return data, text[:fence.start(1)].count("\n") + 1
 
 
-def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], report: Report, line_offset: int) -> dict[str, Any]:
+def check_uml_graph(diagram: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                    node_type: dict[str, str], out: dict[str, list[str]],
+                    report: Report, line_offset: int) -> None:
+    if diagram == "uml-sequence":
+        orders = sorted(int(edge.get("order", 0)) for edge in edges if edge.get("order"))
+        if orders:
+            expected = list(range(1, len(orders) + 1))
+            if orders != expected:
+                report.fail("时序消息", f"消息顺序应为 1..{len(orders)}，实际 {orders}", line_offset)
+            else:
+                report.ok("时序消息", f"{len(orders)} 条消息顺序连续", line_offset)
+        else:
+            report.warn("时序消息", "flow-json 的边缺少 order 字段，无法校验消息顺序", line_offset)
+        for edge in edges:
+            if not edge.get("from") or not edge.get("to"):
+                report.fail("时序消息", f"消息缺少发送者/接收者: {edge}", line_offset)
+
+    elif diagram == "uml-state":
+        initial = [n for n in nodes if n.get("state_kind") == "initial"]
+        final = [n for n in nodes if n.get("state_kind") == "final"]
+        if not initial:
+            report.fail("状态图", "缺少初始状态 [*]", line_offset)
+        if not final:
+            report.fail("状态图", "缺少结束状态 [*]", line_offset)
+        for node in nodes:
+            nid = str(node.get("id"))
+            if node.get("state_kind") in ("initial", "final"):
+                continue
+            if not out.get(nid):
+                report.fail("状态图", f"状态 {nid} 没有出边，也不是结束状态", line_offset)
+        if initial and final:
+            report.ok("状态图", f"{len(nodes)} 个状态 / {len(edges)} 条迁移", line_offset)
+
+    elif diagram == "uml-usecase":
+        actors = [nid for nid, value in node_type.items() if value == "actor"]
+        usecases = [nid for nid, value in node_type.items() if value == "usecase"]
+        if not actors:
+            report.fail("用例图", "缺少 actor", line_offset)
+        if not usecases:
+            report.fail("用例图", "缺少 usecase", line_offset)
+        for usecase in usecases:
+            has_actor = any(
+                (edge["from"] in actors and edge["to"] == usecase)
+                or (edge["to"] in actors and edge["from"] == usecase)
+                for edge in edges
+            )
+            if not has_actor:
+                report.warn("用例图", f"用例 {usecase} 没有关联任何 actor", line_offset)
+        if actors and usecases:
+            report.ok("用例图", f"{len(actors)} 个参与者 / {len(usecases)} 个用例", line_offset)
+
+    elif diagram == "uml-er":
+        for node in nodes:
+            if node.get("type") == "entity" and not node.get("attributes"):
+                report.warn("ER 图", f"实体 {node.get('id')} 没有字段", line_offset)
+        report.ok("ER 图", f"{len(nodes)} 个实体 / {len(edges)} 个关系", line_offset)
+
+    elif diagram == "uml-class":
+        for edge in edges:
+            if edge.get("kind") in ("inheritance", "realization") and node_type.get(edge["to"]) not in ("class", "interface"):
+                report.warn("类图", f"{edge['from']}→{edge['to']} 的父类型不是 class/interface", line_offset)
+        report.ok("类图", f"{len(nodes)} 个类/接口 / {len(edges)} 个关系", line_offset)
+
+    elif diagram in ("uml-component", "uml-deployment"):
+        if not any(value in ("component", "node", "artifact", "cloud", "database") for value in node_type.values()):
+            report.fail(diagram, "没有 component/node/artifact/database 元素", line_offset)
+        else:
+            report.ok(diagram, f"{len(nodes)} 个组件/节点 / {len(edges)} 条连接", line_offset)
+
+    elif diagram == "uml-activity":
+        if not any(value == "start" for value in node_type.values()):
+            report.warn("活动图", "没有 start 节点", line_offset)
+        if not any(value == "end" for value in node_type.values()):
+            report.warn("活动图", "没有 stop/end 节点", line_offset)
+        report.ok("活动图", f"{len(nodes)} 个动作/判断 / {len(edges)} 条流", line_offset)
+
+
+def _split_table_row(line: str) -> list[str]:
+    text = line.strip().strip("|")
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] == "|":
+            buf.append("|")
+            i += 2
+            continue
+        if text[i] == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(text[i])
+        i += 1
+    cells.append("".join(buf).strip())
+    return cells
+
+
+def _markdown_tables(lines: list[str], start: int, end: int) -> list[tuple[list[str], list[list[str]]]]:
+    tables: list[tuple[list[str], list[list[str]]]] = []
+    i = start
+    while i < end:
+        line = lines[i].strip()
+        if line.startswith("|") and i + 1 < end and re.match(r"^\|[\s:\-|]+\|$", lines[i + 1].strip()):
+            header = _split_table_row(line)
+            rows: list[list[str]] = []
+            j = i + 2
+            while j < end and lines[j].strip().startswith("|"):
+                cells = _split_table_row(lines[j])
+                if len(cells) == len(header):
+                    rows.append(cells)
+                j += 1
+            tables.append((header, rows))
+            i = j
+        else:
+            i += 1
+    return tables
+
+
+def _cell_id(value: str) -> str:
+    text = value.strip().strip("`[]() ")
+    match = re.match(r"[A-Za-z0-9_.-]+", text)
+    return match.group(0) if match else text
+
+
+def check_uml_model(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                    steps: dict[str, dict[str, Any]], graph: dict[str, Any], report: Report) -> None:
+    if 11 not in sections:
+        report.fail("UML 模型规格", "UML 图必须包含 `## 11. 模型规格`", 0)
+        return
+    start, end, _ = sections[11]
+    tables = _markdown_tables(lines, start, end)
+    model_header: list[str] = []
+    model_rows: list[list[str]] = []
+    rel_header: list[str] = []
+    rel_rows: list[list[str]] = []
+    for header, rows in tables:
+        joined = " ".join(header).lower()
+        if ("元素id" in joined or "模型元素" in joined) and ("uml" in joined or "类型" in joined):
+            model_header, model_rows = header, rows
+        if "from" in joined and "to" in joined and ("关系" in joined or "消息" in joined):
+            rel_header, rel_rows = header, rows
+
+    if not model_header:
+        report.fail("UML 模型规格", "缺少模型元素表（表头需含 元素ID / UML类型 / 名称 / 代码落点）", start + 1)
+    if not rel_header:
+        report.fail("UML 模型规格", "缺少关系/消息表（表头需含 From / To / 关系或消息）", start + 1)
+
+    node_ids = {str(nid) for nid in graph.get("node_ids", [])}
+    edges = graph.get("edges", [])
+    diagram = str(graph.get("diagram", ""))
+
+    if model_header:
+        if not any("落点" in header or "代码" in header for header in model_header):
+            report.warn("UML 模型规格", "模型元素表建议包含“代码落点”列", start + 1)
+        model_ids = {_cell_id(row[0]) for row in model_rows if row}
+        missing = node_ids - model_ids
+        extra = model_ids - node_ids
+        if missing:
+            report.fail("UML 元素覆盖", f"模型元素表缺少: {', '.join(sorted(missing))}", start + 1)
+        if extra:
+            report.fail("UML 元素覆盖", f"模型元素表包含不存在的元素: {', '.join(sorted(extra))}", start + 1)
+        if not missing and not extra:
+            report.ok("UML 元素覆盖", f"{len(model_ids)} 个元素与 flow-json 一致", start + 1)
+
+    if rel_header:
+        pairs = {(_cell_id(row[0]), _cell_id(row[1])) for row in rel_rows if len(row) >= 2}
+        missing_edges = [
+            f"{edge['from']}→{edge['to']}" for edge in edges
+            if (edge["from"], edge["to"]) not in pairs and (edge["to"], edge["from"]) not in pairs
+        ]
+        if missing_edges:
+            report.fail("UML 关系覆盖", f"关系/消息表缺少: {', '.join(missing_edges)}", start + 1)
+        else:
+            report.ok("UML 关系覆盖", f"{len(edges)} 条关系/消息均已登记", start + 1)
+
+        if diagram == "uml-sequence":
+            order_index = next((i for i, header in enumerate(rel_header)
+                                if "顺序" in header or "序号" in header), None)
+            if order_index is None:
+                report.warn("UML 时序", "关系/消息表建议包含“顺序/序号”列", start + 1)
+            else:
+                orders = []
+                for row in rel_rows:
+                    if len(row) > order_index:
+                        match = re.search(r"\d+", row[order_index])
+                        if match:
+                            orders.append(int(match.group(0)))
+                expected = list(range(1, len(edges) + 1))
+                if sorted(orders) != expected:
+                    report.fail("UML 时序", f"消息顺序应覆盖 1..{len(edges)}，实际 {sorted(orders)}", start + 1)
+                else:
+                    report.ok("UML 时序", f"{len(orders)} 条消息顺序连续", start + 1)
+
+    if diagram == "uml-class" and model_rows:
+        model_text = " ".join(" | ".join(row) for row in model_rows)
+        for node in graph.get("nodes", []):
+            members = list(node.get("attributes") or []) + list(node.get("operations") or [])
+            if members and not any(_cell_id(member) in model_text or member in model_text for member in members):
+                report.warn("UML 类成员", f"{node.get('id')} 的属性/操作未在模型表中体现", start + 1)
+
+
+def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], report: Report,
+                    line_offset: int, uml: bool = False) -> dict[str, Any]:
     if "__error__" in data:
         report.fail("flow-json", f"JSON 解析失败: {data['__error__']}", line_offset)
         return {}
@@ -565,21 +803,24 @@ def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], repo
         else:
             report.ok("flow-json 步骤", f"{len(json_step_ids)} 个步骤与正文一致", line_offset)
 
-    # Node coverage by steps.
+    # Node coverage by steps. UML nodes are covered by §11 model table instead.
     step_nodes: set[str] = set()
     for step in steps.values():
         if step["node"]:
             step_nodes.add(step["node"])
-    uncovered = node_ids - step_nodes
-    if uncovered:
-        report.fail("节点覆盖", f"这些节点没有对应步骤: {', '.join(sorted(uncovered))}", line_offset)
     unknown = step_nodes - node_ids
     if unknown:
         report.fail("节点覆盖", f"步骤引用了 flow-json 中不存在的节点: {', '.join(sorted(unknown))}", line_offset)
-    if not uncovered and not unknown:
-        report.ok("节点覆盖", f"{len(node_ids)} 个节点全部有步骤", line_offset)
+    if not uml:
+        uncovered = node_ids - step_nodes
+        if uncovered:
+            report.fail("节点覆盖", f"这些节点没有对应步骤: {', '.join(sorted(uncovered))}", line_offset)
+        if not uncovered and not unknown:
+            report.ok("节点覆盖", f"{len(node_ids)} 个节点全部有步骤", line_offset)
+    else:
+        report.ok("UML 节点", f"{len(node_ids)} 个模型元素，覆盖由 §11 校验", line_offset)
 
-    # Degrees, reachability, back edges.
+    diagram = str(data.get("diagram", "flowchart"))
     out: dict[str, list[str]] = {nid: [] for nid in node_ids}
     indeg: dict[str, int] = {nid: 0 for nid in node_ids}
     for edge in edges_clean:
@@ -587,72 +828,138 @@ def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], repo
         indeg[edge["to"]] += 1
 
     node_type = {str(n.get("id")): str(n.get("type", "")) for n in nodes if isinstance(n, dict) and n.get("id")}
-    starts = [nid for nid in node_ids if node_type.get(nid) == "start" or indeg.get(nid, 0) == 0]
-    ends = {nid for nid in node_ids if node_type.get(nid) == "end" or not out.get(nid)}
-    if not starts:
-        report.fail("flow-json 起点", "没有 start / 入度为 0 的节点", line_offset)
-    if not ends:
-        report.fail("flow-json 终点", "没有 end / 出度为 0 的节点", line_offset)
-
-    for nid in node_ids:
-        if node_type.get(nid) == "decision" and len(out.get(nid, [])) < 2:
-            report.fail("判断节点", f"{nid} 是 decision，但出边只有 {len(out.get(nid, []))} 条", line_offset)
-        if node_type.get(nid) != "end" and not out.get(nid):
-            report.fail("死端", f"{nid} 不是 end，却没有出边", line_offset)
-
-    def reachable(seeds: list[str], adjacency: dict[str, list[str]]) -> set[str]:
-        seen: set[str] = set()
-        stack = list(seeds)
-        while stack:
-            cur = stack.pop()
-            if cur in seen:
-                continue
-            seen.add(cur)
-            stack.extend(adjacency.get(cur, []))
-        return seen
-
-    if starts:
-        reached = reachable(starts, out)
-        unreachable = node_ids - reached
-        if unreachable:
-            report.fail("可达性", f"从起点无法到达: {', '.join(sorted(unreachable))}", line_offset)
-        else:
-            report.ok("可达性", f"{len(node_ids)} 个节点均可从起点到达", line_offset)
-
-    if ends:
-        reverse: dict[str, list[str]] = {nid: [] for nid in node_ids}
-        for edge in edges_clean:
-            reverse[edge["to"]].append(edge["from"])
-        can_end = reachable(list(ends), reverse)
-        stuck = node_ids - can_end
-        if stuck:
-            report.fail("终止性", f"这些节点无法到达任何 end: {', '.join(sorted(stuck))}", line_offset)
-        else:
-            report.ok("终止性", f"{len(node_ids)} 个节点均可到达 end", line_offset)
-
-    # DFS back edges.
-    color: dict[str, int] = {nid: 0 for nid in node_ids}
     back_edges: list[tuple[str, str]] = []
 
-    def dfs(nid: str) -> None:
-        color[nid] = 1
-        for nxt in out.get(nid, []):
-            if color.get(nxt) == 1:
-                back_edges.append((nid, nxt))
-            elif color.get(nxt, 0) == 0:
-                dfs(nxt)
-        color[nid] = 2
+    if not uml:
+        starts = [nid for nid in node_ids if node_type.get(nid) == "start" or indeg.get(nid, 0) == 0]
+        ends = {nid for nid in node_ids if node_type.get(nid) == "end" or not out.get(nid)}
+        if not starts:
+            report.fail("flow-json 起点", "没有 start / 入度为 0 的节点", line_offset)
+        if not ends:
+            report.fail("flow-json 终点", "没有 end / 出度为 0 的节点", line_offset)
 
-    for nid in node_ids:
-        if color.get(nid, 0) == 0:
-            dfs(nid)
+        for nid in node_ids:
+            if node_type.get(nid) == "decision" and len(out.get(nid, [])) < 2:
+                report.fail("判断节点", f"{nid} 是 decision，但出边只有 {len(out.get(nid, []))} 条", line_offset)
+            if node_type.get(nid) != "end" and not out.get(nid):
+                report.fail("死端", f"{nid} 不是 end，却没有出边", line_offset)
 
-    report.ok("flow-json 图", f"{len(node_ids)} 节点 / {len(edges_clean)} 边 / 回边 {len(back_edges)}", line_offset)
-    return {"back_edges": [f"{a}→{b}" for a, b in back_edges]}
+        def reachable(seeds: list[str], adjacency: dict[str, list[str]]) -> set[str]:
+            seen: set[str] = set()
+            stack = list(seeds)
+            while stack:
+                cur = stack.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                stack.extend(adjacency.get(cur, []))
+            return seen
+
+        if starts:
+            reached = reachable(starts, out)
+            unreachable = node_ids - reached
+            if unreachable:
+                report.fail("可达性", f"从起点无法到达: {', '.join(sorted(unreachable))}", line_offset)
+            else:
+                report.ok("可达性", f"{len(node_ids)} 个节点均可从起点到达", line_offset)
+
+        if ends:
+            reverse: dict[str, list[str]] = {nid: [] for nid in node_ids}
+            for edge in edges_clean:
+                reverse[edge["to"]].append(edge["from"])
+            can_end = reachable(list(ends), reverse)
+            stuck = node_ids - can_end
+            if stuck:
+                report.fail("终止性", f"这些节点无法到达任何 end: {', '.join(sorted(stuck))}", line_offset)
+            else:
+                report.ok("终止性", f"{len(node_ids)} 个节点均可到达 end", line_offset)
+
+        color: dict[str, int] = {nid: 0 for nid in node_ids}
+
+        def dfs(nid: str) -> None:
+            color[nid] = 1
+            for nxt in out.get(nid, []):
+                if color.get(nxt) == 1:
+                    back_edges.append((nid, nxt))
+                elif color.get(nxt, 0) == 0:
+                    dfs(nxt)
+            color[nid] = 2
+
+        for nid in node_ids:
+            if color.get(nid, 0) == 0:
+                dfs(nid)
+        report.ok("flow-json 图", f"{len(node_ids)} 节点 / {len(edges_clean)} 边 / 回边 {len(back_edges)}", line_offset)
+    else:
+        check_uml_graph(diagram, nodes, edges_clean, node_type, out, report, line_offset)
+        report.ok("UML 图", f"{diagram} / {len(node_ids)} 元素 / {len(edges_clean)} 关系", line_offset)
+
+    return {
+        "diagram": diagram,
+        "back_edges": [f"{a}→{b}" for a, b in back_edges],
+        "node_ids": sorted(node_ids),
+        "edges": edges_clean,
+        "nodes": nodes,
+    }
 
 
 def to_mermaid(data: dict[str, Any]) -> str:
+    diagram = str(data.get("diagram", "flowchart"))
     nodes = {str(n["id"]): n for n in data.get("nodes", []) if isinstance(n, dict) and n.get("id")}
+    edges = [e for e in data.get("edges", []) if isinstance(e, dict)]
+    if diagram == "uml-class":
+        lines = ["classDiagram"]
+        for nid, node in nodes.items():
+            attrs = node.get("attributes") or []
+            ops = node.get("operations") or []
+            uml = node.get("uml_type") or node.get("type") or "class"
+            stereo = {"interface": "<<interface>>", "enum": "<<enumeration>>"}.get(uml)
+            if not attrs and not ops and not stereo:
+                lines.append(f"    class {nid}")
+                continue
+            lines.append(f"    class {nid} {{")
+            if stereo:
+                lines.append(f"        {stereo}")
+            for item in attrs + ops:
+                lines.append(f"        {item}")
+            lines.append("    }")
+        for edge in edges:
+            kind = edge.get("kind", "association")
+            left, right = edge["from"], edge["to"]
+            label = f' : {edge["label"]}' if edge.get("label") else ""
+            if kind == "inheritance":
+                lines.append(f"    {right} <|-- {left}{label}")
+            elif kind == "realization":
+                lines.append(f"    {right} <|.. {left}{label}")
+            elif kind == "composition":
+                lines.append(f"    {left} *-- {right}{label}")
+            elif kind == "aggregation":
+                lines.append(f"    {left} o-- {right}{label}")
+            elif kind == "dependency":
+                lines.append(f"    {left} ..> {right}{label}")
+            else:
+                lines.append(f"    {left} --> {right}{label}")
+        return "\n".join(lines) + "\n"
+    if diagram == "uml-sequence":
+        lines = ["sequenceDiagram"]
+        for nid, node in nodes.items():
+            keyword = {"actor": "actor", "database": "database", "queue": "queue"}.get(node.get("type", ""), "participant")
+            lines.append(f"    {keyword} {nid}")
+        for edge in sorted(edges, key=lambda item: int(item.get("order", 0) or 0)):
+            arrow = {"return": "-->>", "async": "->>", "error": "-x"}.get(edge.get("message_kind", ""), "->")
+            lines.append(f"    {edge['from']}{arrow}{edge['to']}: {edge.get('label', '')}")
+        return "\n".join(lines) + "\n"
+    if diagram == "uml-state":
+        lines = ["stateDiagram-v2"]
+        for edge in edges:
+            label = f" : {edge['label']}" if edge.get("label") else ""
+            lines.append(f"    {edge['from']} --> {edge['to']}{label}")
+        return "\n".join(lines) + "\n"
+    if diagram == "uml-er":
+        lines = ["erDiagram"]
+        for edge in edges:
+            lines.append(f"    {edge['from']} ||--o{{ {edge['to']} : {edge.get('label', '')}")
+        return "\n".join(lines) + "\n"
+
     lines = ["flowchart TD"]
     for nid, node in nodes.items():
         prefix = f"{{{node['directive']}}} " if node.get("directive") else ""
@@ -697,11 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
     text = path.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
     report = Report()
+    uml = bool(re.search(r'"diagram"\s*:\s*"uml-', text))
     task_type = check_header(lines, report)
     sections = section_ranges(lines)
-    check_sections(lines, sections, report)
+    check_sections(lines, sections, report, uml)
     steps = parse_steps(lines, sections)
-    check_steps(steps, report)
+    check_steps(steps, report, uml)
     check_status(lines, steps, sections, report)
     check_gates(lines, sections, report)
 
@@ -712,7 +1020,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if 9 not in sections and not data.get("warnings"):
             pass
-        graph = check_flow_json(data, steps, report, line_offset)
+        graph = check_flow_json(data, steps, report, line_offset, uml)
+        if uml:
+            check_uml_model(lines, sections, steps, graph, report)
     loop_text = ""
     if 6 in sections:
         start, end, _ = sections[6]
@@ -722,7 +1032,8 @@ def main(argv: list[str] | None = None) -> int:
         report.ok("功能头", f"{directive_steps} 个步骤使用了功能头指令")
     else:
         report.warn("功能头", "未使用 {TAG} 功能头；建议对关键节点标注，便于下游 agent 识别")
-    check_loops(lines, sections, graph, report)
+    if not uml:
+        check_loops(lines, sections, graph, report)
 
     if args.mermaid:
         if not data:

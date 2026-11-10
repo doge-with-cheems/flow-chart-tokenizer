@@ -95,6 +95,69 @@ DIRECTIVES: dict[str, dict[str, str]] = {
         "label": "或", "category": "control", "node_type": "decision",
         "desc": "多选一分支，每个分支要有标签",
     },
+    # ------------------------------------------------------------------
+    # UML 扩展
+    # ------------------------------------------------------------------
+    "CLASS": {
+        "label": "类", "category": "uml", "node_type": "class",
+        "desc": "UML 类：属性、操作、关系",
+    },
+    "IFACE": {
+        "label": "接口", "category": "uml", "node_type": "interface",
+        "desc": "UML 接口/协议",
+    },
+    "ENUM": {
+        "label": "枚举", "category": "uml", "node_type": "enum",
+        "desc": "UML 枚举/常量集合",
+    },
+    "ACTOR": {
+        "label": "参与者", "category": "uml", "node_type": "actor",
+        "desc": "用例图参与者/外部角色",
+    },
+    "USECASE": {
+        "label": "用例", "category": "uml", "node_type": "usecase",
+        "desc": "用例图功能单元",
+    },
+    "COMPONENT": {
+        "label": "组件", "category": "uml", "node_type": "component",
+        "desc": "组件图构件/模块",
+    },
+    "SERVICE": {
+        "label": "服务", "category": "uml", "node_type": "component",
+        "desc": "可独立部署的服务",
+    },
+    "STATE": {
+        "label": "状态", "category": "uml", "node_type": "state",
+        "desc": "状态机状态",
+    },
+    "ENTITY": {
+        "label": "实体", "category": "uml", "node_type": "entity",
+        "desc": "ER 实体/领域实体",
+    },
+    "MESSAGE": {
+        "label": "消息", "category": "uml", "node_type": "process",
+        "desc": "时序图消息",
+    },
+    "RELATION": {
+        "label": "关系", "category": "uml", "node_type": "process",
+        "desc": "类/ER 关系",
+    },
+    "TRANSITION": {
+        "label": "迁移", "category": "uml", "node_type": "process",
+        "desc": "状态迁移",
+    },
+    "TABLE": {
+        "label": "数据表", "category": "uml", "node_type": "database",
+        "desc": "ER 实体落库表",
+    },
+    "API": {
+        "label": "接口端点", "category": "uml", "node_type": "io",
+        "desc": "对外 API 端点",
+    },
+    "REPO": {
+        "label": "仓储", "category": "uml", "node_type": "database",
+        "desc": "数据访问/仓储层",
+    },
 }
 
 ALIASES = {
@@ -104,8 +167,12 @@ ALIASES = {
 # 一个节点有多个功能头时，按这个优先级决定图形类型。
 TYPE_PRIORITY = (
     "END", "START", "DQ", "OR", "LOOP", "LPAR",
-    "DB", "STORGE", "PRINT", "INPUT", "CTIHD", "FILE", "MFL", "TRANSMUTE",
+    "CLASS", "IFACE", "ENUM", "ACTOR", "USECASE", "COMPONENT", "SERVICE",
+    "STATE", "ENTITY",
+    "DB", "STORGE", "TABLE", "REPO", "PRINT", "API",
+    "INPUT", "CTIHD", "FILE", "MFL", "TRANSMUTE",
     "CARD", "DATA", "DELAY", "MSE", "SUM", "LINEAR", "PREPARE",
+    "MESSAGE", "RELATION", "TRANSITION",
 )
 
 TAG_RE = re.compile(r"\{([A-Za-z][A-Za-z0-9_]*)\}")

@@ -1,0 +1,20 @@
+classDiagram
+    class Order {
+        +UUID id
+        +Decimal total
+        +submit() bool
+    }
+    class OrderItem {
+        +String sku
+        +int qty
+    }
+    class Repository~T~ {
+        <<interface>>
+        +save(entity) void
+        +find(id) T
+    }
+    class OrderRepository
+    Order "1" *-- "1..*" OrderItem : contains
+    OrderRepository ..|> Repository
+    Order --> Customer : belongs to
+    Order ..> Payment : uses

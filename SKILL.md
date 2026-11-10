@@ -1,6 +1,6 @@
 ---
 name: NGM Flow Tokenizer
-description: 把坚果云绘图 .ngm 流程图（或导出的 SVG/PNG/PDF）tokenize 成 agent 可直接执行的“构建逻辑 MD”：支持 `{START}`、`{DQ}`、`{DB}`、`{LOOP}` 等功能头，文件首 3 行声明任务类型，正文按 S1..Sn 给出落点、动作、产出、验收、去向，agent 照此从零构建软件并逐项勾选 STATUS。当用户说“把 ngm 转成逻辑文档”“tokenize ngm”“照着流程图建软件/写代码”“按图施工”“流程图变构建计划”时使用。
+description: 把坚果云绘图 .ngm、Mermaid、PlantUML、draw.io 的流程图和 UML 图（类图、时序图、状态机、ER、用例、组件、部署、活动图）tokenize 成 agent 可直接执行的“构建逻辑 MD”：支持 `{START}`、`{DQ}`、`{DB}`、`{LOOP}`、`{CLASS}`、`{MESSAGE}` 等功能头，文件首 3 行声明任务类型，正文按 S1..Sn 给出落点、动作、产出、验收、去向，agent 照此从零构建软件并逐项勾选 STATUS。当用户说“把 ngm/流程图/UML 转成逻辑文档”“tokenize 流程图或 UML”“照着图建软件/写代码”“按图施工”时使用。
 ---
 
 # NGM Flow Tokenizer：把流程图编译成可施工的逻辑 MD
@@ -62,7 +62,8 @@ description: 把坚果云绘图 .ngm 流程图（或导出的 SVG/PNG/PDF）toke
 | --- | --- |
 | `.ngm` | 先跑 `ngm_tokens.py`；它按 JSON / XML / ZIP / 文本自动嗅探 |
 | `.svg` / `.drawio` / `.xml` | 脚本可直接抽 `mxCell` / `<text>` |
-| `.mmd` / `.mermaid` / `.dot` | 脚本可直接解析 |
+| `.mmd` / `.mermaid` / `.dot` | 脚本可直接解析；Mermaid 支持 flowchart / class / sequence / state / ER |
+| `.puml` / `.plantuml` | PlantUML 子集：class / sequence / state / usecase / component / deployment / activity |
 | `.json`（React Flow 等） | 脚本走通用 `nodes`/`edges` 抽取 |
 | `.png` / `.jpg` / 截图 | 用 `read` 看图；文字小就先裁剪放大 |
 | `.pdf` | 用 `read` 逐页看 |
@@ -75,6 +76,11 @@ description: 把坚果云绘图 .ngm 流程图（或导出的 SVG/PNG/PDF）toke
 python scripts/ngm_tokens.py "自动作答流程.ngm"
 python scripts/ngm_tokens.py "自动作答流程.ngm" --json --out flow.json
 python scripts/ngm_tokens.py "自动作答流程.ngm" --mermaid
+
+# UML
+python scripts/ngm_tokens.py "uml-class.mmd"
+python scripts/ngm_tokens.py "uml-sequence.puml" --json --out flow.json
+python scripts/ngm_tokens.py "uml-state.mmd" --mermaid
 ```
 
 Windows 下 `python` 不在 PATH 时用 `py -3`。脚本只用标准库，要求 Python 3.9+。
@@ -190,6 +196,52 @@ python scripts/logic_check.py "自动作答流程.logic.md"
 
 改完再跑；**数量不一致就先修，不要交付**。
 
+### 2.7 UML 图（完整支持）
+
+`ngm_tokens.py` 会自动识别并解析：
+
+| 输入 | 识别关键字 | 输出 `diagram` |
+| --- | --- | --- |
+| Mermaid 类图 | `classDiagram` | `uml-class` |
+| Mermaid 时序图 | `sequenceDiagram` | `uml-sequence` |
+| Mermaid 状态机 | `stateDiagram-v2` | `uml-state` |
+| Mermaid ER 图 | `erDiagram` | `uml-er` |
+| PlantUML 类图 | `class` / `interface` / `enum` / `object` | `uml-class` |
+| PlantUML 时序图 | `participant` / `->>` / `-->>` | `uml-sequence` |
+| PlantUML 状态机 | `state` / `[*]` | `uml-state` |
+| PlantUML 用例图 | `actor` / `usecase` | `uml-usecase` |
+| PlantUML 组件图 | `component` / `package` | `uml-component` |
+| PlantUML 部署图 | `node` / `artifact` / `cloud` | `uml-deployment` |
+| PlantUML 活动图 | `start` / `:action;` / `stop` | `uml-activity` |
+| draw.io / `.ngm` | UML 形状关键字 | 按形状推断 |
+
+UML 图编译出的逻辑 MD **必须增加 `## 11. 模型规格`**：
+
+```markdown
+## 11. 模型规格
+
+### 11.1 模型元素
+| 元素ID | UML类型 | 名称 | 代码落点 | 实现要点 | 验收 |
+| --- | --- | --- | --- | --- | --- |
+| N1 | class | Order | `domain/order.py` | 属性 id/total；操作 submit | 可导入 |
+
+### 11.2 关系/消息
+| From | To | 关系/消息 | 顺序/多重性 | 实现 |
+| --- | --- | --- | --- | --- |
+| N1 | N2 | composition | 1..* | `Order.items` |
+```
+
+要求：
+
+- 11.1 和 11.2 的 ID 必须与 flow-json 的 `nodes` / `edges` 一致。
+- 时序图在 11.2 写 `顺序`（1..N）；状态机写 `事件/守卫/动作`；类图写 `多重性`。
+- 每个 UML 元素都要有代码落点和验收；类图的关系要写实现方式。
+- flow-json 必须带 `"diagram": "uml-*"` 和对应的 UML 字段（`attributes`、`operations`、`order`、`state_kind` 等）。
+- 详细支持矩阵、限制和施工顺序见 `references/uml-support.md`。
+
+类图样例：`references/example-uml-class.md`。
+时序图样例：`references/example-uml-sequence.md`。
+
 ## 3. 模式 B：照逻辑 MD 构建软件
 
 ### 3.1 开工前
@@ -252,10 +304,13 @@ python scripts/logic_check.py "自动作答流程.logic.md"
 ## 5. 文件与参考
 
 - `references/logic-md-contract.md`：首 3 行规范、章节骨架、字段定义、flow-json schema。
-- `references/directive-catalog.md`：21 个功能头 `{TAG}` 的语义、组合规则和校验行为。
+- `references/directive-catalog.md`：21 + UML 功能头 `{TAG}` 的语义、组合规则和校验行为。
+- `references/uml-support.md`：UML 支持矩阵、元素映射、限制和施工顺序。
 - `references/build-mapping.md`：流程图元素 → 软件结构、常见架构模式、拆分粒度。
-- `references/example-logic.md`：一份通过 `logic_check.py` 的完整样例。
-- `scripts/ngm_tokens.py`：`.ngm` / Mermaid / draw.io / DOT / JSON / SVG tokenizer。
+- `references/example-logic.md`：流程图完整样例。
+- `references/example-uml-class.md`：类图 → 领域模型完整样例。
+- `references/example-uml-sequence.md`：时序图 → 接口实现完整样例。
+- `scripts/ngm_tokens.py`：`.ngm` / Mermaid / PlantUML / draw.io / DOT / JSON / SVG tokenizer（流程图 + UML）。
 - `scripts/logic_check.py`：逻辑 MD 校验器 + Mermaid 回环。
 - `scripts/directives.py`：功能头目录（两个脚本共用）。
 
@@ -271,5 +326,6 @@ python scripts/logic_check.py "自动作答流程.logic.md"
 - [ ] 关键节点挂了功能头：`{DQ}` 有 2 个去向，`{END}` 无下一步，`{LOOP}` 有回边和退出条件。
 - [ ] §8 STATUS 覆盖全部步骤且每步只出现一次。
 - [ ] flow-json 可解析，节点/边/步骤与正文一致。
+- [ ] UML 图包含 §11 模型规格，11.1/11.2 覆盖全部元素与关系；时序图序号 1..N 连续。
 - [ ] `logic_check.py` 输出 `FAIL 0`。
 - [ ] §9 列出所有 `[?]`、`【推断】` 和脚本误判。

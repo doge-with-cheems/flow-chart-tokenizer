@@ -2,7 +2,7 @@
 
 功能头是写在节点标签或步骤标题里的 `{TAG}`，用**受控词汇**告诉 tokenizer 和下游 agent“这个节点是什么语义”。它不是装饰，会改变类型判定和校验规则。
 
-倡议书原文的 21 个标记全部收录；拼写 `{STORGE}` 保留，同时接受 `{STORAGE}`。
+倡议书原文的 21 个标记全部收录；拼写 `{STORGE}` 保留，同时接受 `{STORAGE}`。另外增加 15 个 UML 扩展标记（`{CLASS}`、`{MESSAGE}` 等），用于类图、时序图、状态机、用例图、组件/部署图和 ER 图。
 
 ## 1. 放置位置
 
@@ -82,14 +82,37 @@
 | `{DELAY}` | 延迟 | process | 等待、超时、节流 | 应说明时长或超时值 |
 | `{MSE}` | 测量 | process | 度量、断言、基准、阈值 | 应有数字阈值或可断言指标 |
 
+## 5.5 UML 扩展
+
+| 功能头 | 中文 | 节点类型 | 含义 | 校验提示 |
+| --- | --- | --- | --- | --- |
+| `{CLASS}` | 类 | class | UML 类 | 应说明属性/操作/职责 |
+| `{IFACE}` | 接口 | interface | 协议/抽象接口 | 应说明方法契约 |
+| `{ENUM}` | 枚举 | enum | 枚举/常量集合 | 应说明取值 |
+| `{ACTOR}` | 参与者 | actor | 用例图外部角色 | 应说明外部角色 |
+| `{USECASE}` | 用例 | usecase | 用例图功能单元 | 应说明场景与验收 |
+| `{COMPONENT}` | 组件 | component | 组件/模块 | 应说明职责与依赖 |
+| `{SERVICE}` | 服务 | component | 可部署服务 | 应说明部署与端口 |
+| `{STATE}` | 状态 | state | 状态机状态 | 应说明事件与迁移 |
+| `{ENTITY}` | 实体 | entity | ER/领域实体 | 应说明字段与主键 |
+| `{MESSAGE}` | 消息 | process | 时序图消息 | 应说明发送者、接收者、顺序 |
+| `{RELATION}` | 关系 | process | 类/ER 关系 | 应说明实现方式 |
+| `{TRANSITION}` | 迁移 | process | 状态迁移 | 应说明事件/守卫/动作 |
+| `{TABLE}` | 数据表 | database | ER 实体落库 | 应说明字段/主键/索引 |
+| `{API}` | 接口端点 | io | 对外 API | 应说明请求/响应契约 |
+| `{REPO}` | 仓储 | database | 数据访问层 | 应说明查询/保存接口 |
+
 ## 6. 类型优先级
 
 一个节点有多个功能头时，按下面顺序决定图形类型：
 
 ```text
 END > START > DQ > OR > LOOP > LPAR
-    > DB > STORGE > PRINT > INPUT > CTIHD > FILE > MFL > TRANSMUTE
+    > CLASS > IFACE > ENUM > ACTOR > USECASE > COMPONENT > SERVICE > STATE > ENTITY
+    > DB > STORGE > TABLE > REPO > PRINT > API
+    > INPUT > CTIHD > FILE > MFL > TRANSMUTE
     > CARD > DATA > DELAY > MSE > SUM > LINEAR > PREPARE
+    > MESSAGE > RELATION > TRANSITION
 ```
 
 例子：

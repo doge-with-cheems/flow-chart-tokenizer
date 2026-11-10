@@ -48,10 +48,12 @@ class Graph:
     def __init__(self, source: str = "", fmt: str = "") -> None:
         self.source = source
         self.fmt = fmt
+        self.diagram = "flowchart"
         self.nodes: dict[str, dict[str, Any]] = {}
         self.edges: list[dict[str, str]] = []
         self.warnings: list[str] = []
         self.order: list[str] = []
+        self.meta: dict[str, Any] = {}
 
     def add_node(self, nid: str, label: str = "", ntype: str | None = None,
                  shape: str | None = None) -> None:
@@ -94,7 +96,7 @@ class Graph:
                 if new_type and node["type"] in ("process", ""):
                     node["type"] = new_type
 
-    def add_edge(self, src: str, dst: str, label: str = "", kind: str = "") -> None:
+    def add_edge(self, src: str, dst: str, label: str = "", kind: str = "", **meta: Any) -> None:
         src, dst = str(src).strip(), str(dst).strip()
         if not src or not dst or src == dst and not label:
             return
@@ -103,8 +105,14 @@ class Graph:
         label = clean_label(label)
         entry = {"from": src, "to": dst, "label": label,
                  "kind": kind or edge_kind(label)}
+        entry.update({key: value for key, value in meta.items() if value not in (None, "")})
         if entry not in self.edges:
             self.edges.append(entry)
+
+    def annotate(self, nid: str, **meta: Any) -> None:
+        node = self.nodes.get(str(nid))
+        if node is not None:
+            node.update({key: value for key, value in meta.items() if value not in (None, "")})
 
 
 def clean_label(value: Any) -> str:
@@ -113,8 +121,18 @@ def clean_label(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return ""
     text = str(value)
+    stereotypes: dict[str, str] = {}
+
+    def keep_stereotype(match: re.Match[str]) -> str:
+        key = f"\ue010{len(stereotypes)}\ue011"
+        stereotypes[key] = match.group(0)
+        return key
+
+    text = re.sub(r"<<[^>]+>>", keep_stereotype, text)
     text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
     text = re.sub(r"<[^>]+>", "", text)
+    for key, stereotype in stereotypes.items():
+        text = text.replace(key, stereotype)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = text.replace("&lt;", "<").replace("&gt;", ">")
     text = re.sub(r"\s+", " ", text).strip()
@@ -140,9 +158,19 @@ def normalize_type(raw: str | None, label: str, shape: str | None = None) -> str
         "圆柱": "database", "数据库": "database",
         "parallelogram": "io", "document": "io", "input": "io",
         "output": "io", "平行四边形": "io",
-        "module": "subprocess", "service": "subprocess",
+        "module": "subprocess",
         "subroutine": "subprocess", "双边框": "subprocess",
         "comment": "note",
+        "class": "class", "umlclass": "class", "uml-class": "class",
+        "interface": "interface", "iface": "interface",
+        "enum": "enum", "enumeration": "enum",
+        "actor": "actor", "usecase": "usecase", "use-case": "usecase",
+        "component": "component", "service": "component",
+        "state": "state", "entity": "entity", "lifeline": "participant",
+        "participant": "participant", "object": "object",
+        "queue": "queue", "boundary": "boundary", "control": "control",
+        "artifact": "artifact", "cloud": "cloud", "node": "node",
+        "package": "package",
     }
     kind = mapping.get(raw_value)
     if not kind:
@@ -166,6 +194,22 @@ def normalize_type(raw: str | None, label: str, shape: str | None = None) -> str
 def infer_type(label: str, shape: str | None = None) -> str:
     low = (label or "").lower()
     shp = (shape or "").lower()
+    if shp in ("class", "umlclass", "uml-class"):
+        return "class"
+    if shp in ("interface", "iface"):
+        return "interface"
+    if shp in ("enum", "enumeration"):
+        return "enum"
+    if shp == "actor":
+        return "actor"
+    if shp in ("usecase", "use-case"):
+        return "usecase"
+    if shp in ("component", "service"):
+        return "component"
+    if shp == "state":
+        return "state"
+    if shp == "entity":
+        return "entity"
     if "?" in low or "？" in low or any(w in low for w in ("是否", "if ", "if(", "switch", "条件")):
         return "decision"
     if shp in ("decision", "diamond", "rhombus"):
@@ -347,6 +391,7 @@ def parse_xml(text: str, graph: Graph) -> None:
         return None
 
     # Pass 2: vertices and edges.
+    uml_kind = ""
     for elem in root.iter():
         tag = local(elem.tag)
         if tag not in ("mxCell", "cell", "node", "vertex", "shape", "object", "edge"):
@@ -396,6 +441,18 @@ def parse_xml(text: str, graph: Graph) -> None:
         shape = ""
         if "decision" in low_style or "rhombus" in low_style or "diamond" in low_style:
             shape = "decision"
+        elif "umlactor" in low_style:
+            shape = "actor"
+        elif "umllifeline" in low_style:
+            shape = "participant"
+        elif "umlusecase" in low_style:
+            shape = "usecase"
+        elif "umlcomponent" in low_style:
+            shape = "component"
+        elif "umlstate" in low_style:
+            shape = "state"
+        elif "umlclass" in low_style or ("swimlane" in low_style and "stacklayout" in low_style):
+            shape = "class"
         elif "terminator" in low_style:
             shape = "end"
         elif "start" in low_style:
@@ -406,8 +463,20 @@ def parse_xml(text: str, graph: Graph) -> None:
             shape = "io"
         elif "ellipse" in low_style:
             shape = "end" if any(w in low_label for w in ("end", "结束", "完成")) else "start"
+        if shape in ("class", "interface", "enum"):
+            uml_kind = "uml-class"
+        elif shape in ("actor", "usecase"):
+            uml_kind = "uml-usecase"
+        elif shape == "participant":
+            uml_kind = "uml-sequence"
+        elif shape == "component":
+            uml_kind = "uml-component"
+        elif shape == "state":
+            uml_kind = "uml-state"
         graph.add_node(nid, label, None, shape)
 
+    if uml_kind:
+        graph.diagram = uml_kind
     if not graph.nodes:
         graph.warnings.append("XML 中没有找到 mxCell/cell/node/vertex 节点。")
 
@@ -507,6 +576,566 @@ def parse_mermaid(text: str, graph: Graph) -> None:
 
 
 # ---------------------------------------------------------------------------
+# UML: Mermaid (class / sequence / state / ER) + PlantUML
+# ---------------------------------------------------------------------------
+
+UML_ID = r"[A-Za-z_][\w.]*(?:-[\w.]+)*"
+UML_CLASS_START_RE = re.compile(
+    r"^\s*(?P<kind>abstract\s+class|class|interface|enum|object)\s+"
+    r'(?:"(?P<quoted>[^"]+)"|(?P<name>' + UML_ID + r"))"
+    r"(?:\s+as\s+(?P<alias>" + UML_ID + r"))?"
+    r"(?:\s*<<(?P<stereo>[^>]+)>>)?\s*(?P<open>\{)?\s*$",
+    re.I,
+)
+UML_REL_RE = re.compile(
+    r'^\s*(?P<left>' + UML_ID + r')\s*(?:"(?P<lmult>[^"]*)")?\s*'
+    r"(?P<op><\|--|<\|\.\.|\.\.\|>|\*--|\*\.\.|o--|o\.\.|<--|<\.\.|-->|\.\.>|--|\.\.)\s*"
+    r'(?:"(?P<rmult>[^"]*)")?\s*(?P<right>' + UML_ID + r")\s*(?::\s*(?P<label>.*))?$"
+)
+SEQ_DECL_RE = re.compile(
+    r"^\s*(participant|actor|boundary|control|entity|database|queue|collections)\s+"
+    r'(?:"(?P<quoted>[^"]+)"|(?P<name>' + UML_ID + r"))"
+    r"(?:\s+as\s+(?P<alias>" + UML_ID + r"))?\s*$",
+    re.I,
+)
+SEQ_MSG_RE = re.compile(
+    r"^\s*(?P<a>" + UML_ID + r")\s*"
+    r"(?P<op><--|<-|-->>|->>|-->|->|--x|-x|->x|->o)\s*"
+    r"(?P<b>" + UML_ID + r")\s*(?::\s*(?P<text>.*))?$"
+)
+FRAGMENT_RE = re.compile(r"^\s*(alt|else|opt|loop|par|critical|break|rect|group)\b\s*(.*)$", re.I)
+STATE_TRANS_RE = re.compile(
+    r"^\s*(?P<a>\[\*\]|" + UML_ID + r")\s*-->\s*(?P<b>\[\*\]|" + UML_ID + r")\s*(?::\s*(?P<label>.*))?$"
+)
+STATE_DECL_RE = re.compile(
+    r'^\s*state\s+(?:"(?P<quoted>[^"]+)"\s+as\s+)?(?P<name>' + UML_ID + r")\s*(?P<open>\{)?\s*$",
+    re.I,
+)
+ER_REL_RE = re.compile(
+    r"^\s*(?P<a>[\w-]+)\s+(?P<lc>[|}{o]{1,2})--(?P<rc>[|}{o]{1,2})\s+"
+    r"(?P<b>[\w-]+)\s*:\s*(?P<label>.*)$"
+)
+USECASE_DECL_RE = re.compile(
+    r'^\s*(actor|usecase)\s+(?:"(?P<quoted>[^"]+)"|(?P<name>' + UML_ID + r"))"
+    r"(?:\s+as\s+(?P<alias>" + UML_ID + r"))?\s*$",
+    re.I,
+)
+COMP_DECL_RE = re.compile(
+    r"^\s*(component|node|artifact|cloud|database|package|folder|frame|interface)\s+"
+    r'(?:\[(?P<bracket>[^\]]+)\]|"(?P<quoted>[^"]+)"|(?P<name>' + UML_ID + r"))"
+    r"(?:\s+as\s+(?P<alias>" + UML_ID + r"))?\s*$",
+    re.I,
+)
+GENERIC_REL_RE = re.compile(
+    r'^\s*(?P<left>' + UML_ID + r')\s*(?:"(?P<lmult>[^"]*)")?\s*'
+    r"(?P<op>--\|>|<\|--|-->>|->>|-->|\.\.>|\.>|<--|->|\.\.|--)\s*"
+    r'(?:"(?P<rmult>[^"]*)")?\s*(?P<right>' + UML_ID + r")\s*(?::\s*(?P<label>.*))?$"
+)
+
+
+def _clean_uml_lines(text: str, plantuml: bool = False) -> list[str]:
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if plantuml and stripped.startswith("'"):
+            continue
+        if stripped.startswith("%%"):
+            continue
+        out.append(stripped)
+    return out
+
+
+def _uml_type(raw: str) -> str:
+    value = raw.lower()
+    if "interface" in value:
+        return "interface"
+    if "enum" in value:
+        return "enum"
+    if "object" in value:
+        return "object"
+    return "class"
+
+
+def _set_uml_node(graph: Graph, nid: str, label: str, uml_type: str, **meta: Any) -> None:
+    graph.add_node(nid, label or nid, uml_type)
+    node = graph.nodes.get(nid)
+    if node is None:
+        return
+    node["type"] = uml_type
+    node["uml_type"] = uml_type
+    node.update({key: value for key, value in meta.items() if value not in (None, "", [])})
+
+
+def _add_member(graph: Graph, nid: str, text: str) -> None:
+    value = text.strip()
+    if not value or value.startswith("<<"):
+        return
+    value = re.sub(r"^[+\-#~*$]\s*", "", value)
+    node = graph.nodes.get(nid)
+    if node is None:
+        return
+    if "(" in value:
+        node.setdefault("operations", []).append(value)
+    else:
+        node.setdefault("attributes", []).append(value)
+
+
+def _class_relation(graph: Graph, left: str, right: str, op: str, label: str,
+                    lmult: str = "", rmult: str = "") -> None:
+    label = clean_label(label)
+    meta = {"left_multiplicity": lmult, "right_multiplicity": rmult}
+    if op == "<|--":
+        graph.add_edge(right, left, label, "inheritance", **meta)
+    elif op == "<|..":
+        graph.add_edge(right, left, label, "realization", **meta)
+    elif op == "..|>":
+        graph.add_edge(left, right, label, "realization", **meta)
+    elif op in ("*--", "*.."):
+        graph.add_edge(left, right, label, "composition", **meta)
+    elif op in ("o--", "o.."):
+        graph.add_edge(left, right, label, "aggregation", **meta)
+    elif op in ("<--", "<.."):
+        graph.add_edge(right, left, label, "association" if op == "<--" else "dependency", **meta)
+    elif op == "-->":
+        graph.add_edge(left, right, label, "association", **meta)
+    elif op == "..>":
+        graph.add_edge(left, right, label, "dependency", **meta)
+    elif op == "--":
+        graph.add_edge(left, right, label, "association", **meta)
+    elif op == "..":
+        graph.add_edge(left, right, label, "dependency", **meta)
+
+
+def parse_class_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    graph.diagram = "uml-class"
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith(("classDiagram", "@startuml", "@enduml", "direction",
+                            "skinparam", "title", "hide", "show", "package",
+                            "namespace", "together {")):
+            i += 1
+            continue
+        match = UML_CLASS_START_RE.match(line)
+        if not match:
+            stripped_generic = re.sub(r"(?<=\w)\s*<[^<>]*>(?=\s*(?:\{|$|<<|\bas\b))", "", line)
+            stripped_generic = re.sub(r"(?<=\w)\s*~[^~]*~(?=\s*(?:\{|$))", "", stripped_generic)
+            match = UML_CLASS_START_RE.match(stripped_generic)
+        if match:
+            raw_name = match.group("quoted") or match.group("name") or ""
+            alias = match.group("alias") or ""
+            nid = alias or raw_name
+            label = raw_name
+            kind = _uml_type(match.group("kind"))
+            stereo = match.group("stereo") or ""
+            if stereo:
+                kind = _uml_type(stereo)
+            _set_uml_node(graph, nid, label, kind, stereotype=stereo)
+            if match.group("open"):
+                i += 1
+                while i < len(lines) and lines[i] != "}":
+                    body = lines[i]
+                    if body.startswith("<<"):
+                        kind = _uml_type(body.strip("<> "))
+                        _set_uml_node(graph, nid, label, kind, stereotype=body.strip("<> "))
+                    else:
+                        _add_member(graph, nid, body)
+                    i += 1
+            i += 1
+            continue
+
+        if line.startswith("note"):
+            if plantuml:
+                i += 1
+                while i < len(lines) and lines[i].lower() != "end note":
+                    i += 1
+            i += 1
+            continue
+
+        member = re.match(r"^([\w.-]+)\s*:\s*(.+)$", line)
+        if member and not plate_relation(line):
+            _add_member(graph, member.group(1), member.group(2))
+            i += 1
+            continue
+
+        rel = UML_REL_RE.match(line)
+        if rel:
+            left, right = rel.group("left"), rel.group("right")
+            for nid in (left, right):
+                if nid not in graph.nodes:
+                    _set_uml_node(graph, nid, nid, "class")
+            _class_relation(graph, left, right, rel.group("op"),
+                            rel.group("label") or "", rel.group("lmult") or "", rel.group("rmult") or "")
+        i += 1
+
+    if not graph.nodes:
+        graph.warnings.append("类图解析后没有节点，检查 class/interface/enum 语法。")
+
+
+def plate_relation(line: str) -> bool:
+    return bool(UML_REL_RE.match(line) or GENERIC_REL_RE.match(line))
+
+
+def _message_kind(op: str) -> str:
+    if op in ("-->>", "-->"):
+        return "return"
+    if op in ("<--", "<-"):
+        return "return"
+    if op in ("->>", "->o"):
+        return "async"
+    if op in ("->x", "-x", "--x"):
+        return "error"
+    return "sync"
+
+
+def parse_sequence_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    graph.diagram = "uml-sequence"
+    messages: list[dict[str, Any]] = []
+    fragments: list[dict[str, str]] = []
+    order = 0
+    for line in lines:
+        if line.startswith(("sequenceDiagram", "@startuml", "@enduml", "autonumber",
+                            "activate", "deactivate", "title", "skinparam")):
+            continue
+        if line.startswith("note") or line.startswith("Note"):
+            continue
+        decl = SEQ_DECL_RE.match(line)
+        if decl:
+            raw = decl.group("quoted") or decl.group("name") or ""
+            alias = decl.group("alias") or ""
+            nid = alias or raw
+            label = raw
+            uml_type = decl.group(1).lower()
+            if uml_type == "collections":
+                uml_type = "participant"
+            _set_uml_node(graph, nid, label, uml_type)
+            continue
+        frag = FRAGMENT_RE.match(line)
+        if frag:
+            kind = frag.group(1).lower()
+            text = frag.group(2).strip()
+            if kind == "else":
+                if fragments:
+                    fragments[-1]["label"] = text or "else"
+            else:
+                fragments.append({"kind": kind, "label": text})
+            continue
+        if line in ("end", "end alt", "end loop", "end opt", "end par"):
+            if fragments:
+                fragments.pop()
+            continue
+        msg = SEQ_MSG_RE.match(line)
+        if msg:
+            order += 1
+            a, b = msg.group("a"), msg.group("b")
+            text = clean_label(msg.group("text") or "")
+            op = msg.group("op")
+            kind = _message_kind(op)
+            frag_text = ""
+            if fragments:
+                frag_text = f"{fragments[-1]['kind']}: {fragments[-1]['label']}".strip(": ")
+            graph.add_node(a)
+            graph.add_node(b)
+            graph.add_edge(a, b, text, "message",
+                           order=order, message=text, message_kind=kind, fragment=frag_text)
+            messages.append({"order": order, "from": a, "to": b, "message": text,
+                             "message_kind": kind, "fragment": frag_text})
+            continue
+    graph.meta["messages"] = messages
+    if not graph.nodes:
+        graph.warnings.append("时序图解析后没有参与者，检查 participant/actor 与消息箭头。")
+
+
+def _state_label_parts(label: str) -> tuple[str, str, str]:
+    value = clean_label(label)
+    guard = ""
+    action = ""
+    guard_match = re.search(r"\[([^\]]+)\]", value)
+    if guard_match:
+        guard = guard_match.group(1).strip()
+        value = (value[:guard_match.start()] + value[guard_match.end():]).strip()
+    if "/" in value:
+        value, action = value.split("/", 1)
+        value, action = value.strip(), action.strip()
+    return value.strip(), guard, action
+
+
+def parse_state_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    graph.diagram = "uml-state"
+    initial = False
+    finals: list[str] = []
+    for line in lines:
+        if line.startswith(("stateDiagram", "stateDiagram-v2", "@startuml", "@enduml",
+                            "direction", "skinparam", "title", "hide", "show")):
+            continue
+        decl = STATE_DECL_RE.match(line)
+        if decl:
+            raw = decl.group("quoted") or decl.group("name") or ""
+            _set_uml_node(graph, raw, raw, "state")
+            continue
+        desc = re.match(r"^([\w.-]+)\s*:\s*(.+)$", line)
+        if desc and "-->" not in line:
+            graph.annotate(desc.group(1), description=desc.group(2).strip())
+            continue
+        trans = STATE_TRANS_RE.match(line)
+        if trans:
+            a, b = trans.group("a"), trans.group("b")
+            if a == "[*]":
+                a = "__start__"
+                _set_uml_node(graph, a, "初始", "state", state_kind="initial")
+                initial = True
+            if b == "[*]":
+                b = "__end__"
+                _set_uml_node(graph, b, "结束", "state", state_kind="final")
+                finals.append(b)
+            if a not in graph.nodes:
+                _set_uml_node(graph, a, a, "state")
+            if b not in graph.nodes:
+                _set_uml_node(graph, b, b, "state")
+            event, guard, action = _state_label_parts(trans.group("label") or "")
+            graph.add_edge(a, b, event, "transition", guard=guard, action=action)
+    graph.meta["initial"] = initial
+    graph.meta["final"] = finals
+    if not graph.nodes:
+        graph.warnings.append("状态图解析后没有状态，检查 state 与 --> 语法。")
+
+
+def parse_er_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    graph.diagram = "uml-er"
+    entities: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith(("erDiagram", "@startuml", "@enduml", "title", "skinparam")):
+            i += 1
+            continue
+        block = re.match(r"^([\w-]+)\s*\{\s*$", line)
+        if block:
+            nid = block.group(1)
+            _set_uml_node(graph, nid, nid, "entity")
+            entities.append(nid)
+            i += 1
+            while i < len(lines) and lines[i] != "}":
+                attr = lines[i].strip()
+                if attr:
+                    graph.nodes[nid].setdefault("attributes", []).append(attr)
+                i += 1
+            i += 1
+            continue
+        rel = ER_REL_RE.match(line)
+        if rel:
+            a, b = rel.group("a"), rel.group("b")
+            _set_uml_node(graph, a, a, "entity")
+            _set_uml_node(graph, b, b, "entity")
+            graph.add_edge(a, b, rel.group("label"), "er-relation",
+                           left_cardinality=rel.group("lc"), right_cardinality=rel.group("rc"))
+        i += 1
+    graph.meta["entities"] = list(dict.fromkeys(entities))
+    if not graph.nodes:
+        graph.warnings.append("ER 图解析后没有实体，检查实体与关系语法。")
+
+
+def parse_usecase_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    graph.diagram = "uml-usecase"
+    for line in lines:
+        if line.startswith(("@startuml", "@enduml", "title", "skinparam",
+                            "left to right", "package", "rectangle")):
+            continue
+        decl = USECASE_DECL_RE.match(line)
+        if decl:
+            raw = decl.group("quoted") or decl.group("name") or ""
+            alias = decl.group("alias") or ""
+            nid = alias or raw
+            uml_type = "actor" if decl.group(1).lower() == "actor" else "usecase"
+            _set_uml_node(graph, nid, raw, uml_type)
+            continue
+        rel = GENERIC_REL_RE.match(line)
+        if rel:
+            left, right = rel.group("left"), rel.group("right")
+            op = rel.group("op")
+            label = clean_label(rel.group("label") or "")
+            if op == "--|>":
+                graph.add_edge(right, left, label, "generalization")
+            elif "<<include>>" in label.lower():
+                graph.add_edge(left, right, label, "include")
+            elif "<<extend>>" in label.lower():
+                graph.add_edge(left, right, label, "extend")
+            elif op in ("..>", "."):
+                graph.add_edge(left, right, label, "dependency")
+            else:
+                graph.add_edge(left, right, label, "association")
+    if not graph.nodes:
+        graph.warnings.append("用例图解析后没有元素，检查 actor/usecase 语法。")
+
+
+def parse_component_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    deployment = False
+    for line in lines:
+        if line.startswith(("@startuml", "@enduml", "title", "skinparam",
+                            "left to right")):
+            continue
+        decl = COMP_DECL_RE.match(line)
+        if decl:
+            keyword = decl.group(1).lower()
+            raw = decl.group("bracket") or decl.group("quoted") or decl.group("name") or ""
+            alias = decl.group("alias") or ""
+            nid = alias or raw
+            uml_type = keyword
+            if keyword in ("node", "artifact", "cloud"):
+                deployment = True
+            _set_uml_node(graph, nid, raw, uml_type)
+            continue
+        rel = GENERIC_REL_RE.match(line)
+        if rel:
+            left, right = rel.group("left"), rel.group("right")
+            op = rel.group("op")
+            label = clean_label(rel.group("label") or "")
+            kind = "dependency" if op in ("..>", "..") else "connector"
+            graph.add_edge(left, right, label, kind)
+    graph.diagram = "uml-deployment" if deployment else "uml-component"
+    if not graph.nodes:
+        graph.warnings.append("组件/部署图解析后没有元素，检查 component/node 语法。")
+
+
+def parse_activity_diagram(lines: list[str], graph: Graph, plantuml: bool = False) -> None:
+    """Basic activity support: start/stop, actions, if/else, while, fork/join."""
+    graph.diagram = "uml-activity"
+    prev: str | None = None
+    counter = 0
+    stack: list[dict[str, Any]] = []
+
+    def new_id(prefix: str) -> str:
+        nonlocal counter
+        counter += 1
+        return f"{prefix}{counter}"
+
+    for line in lines:
+        if line.startswith(("@startuml", "@enduml", "title", "skinparam",
+                            "left to right", "partition", "|", "endif", "endwhile",
+                            "end fork", "end merge")):
+            if line in ("endif", "endwhile", "end fork", "end merge") and stack:
+                frame = stack.pop()
+                join = new_id("join")
+                _set_uml_node(graph, join, "汇合", "process", directive="PREPARE")
+                for branch_end in frame.get("ends", []):
+                    if branch_end:
+                        graph.add_edge(branch_end, join, "", "normal")
+                if prev and prev not in frame.get("ends", []):
+                    graph.add_edge(prev, join, "", "normal")
+                prev = join
+            continue
+        low = line.lower()
+        if low in ("start", "start;"):
+            node = new_id("start")
+            _set_uml_node(graph, node, "开始", "start")
+            prev = node
+            continue
+        if low in ("stop", "stop;", "end", "end;"):
+            node = new_id("end")
+            _set_uml_node(graph, node, "结束", "end")
+            if prev:
+                graph.add_edge(prev, node)
+            prev = node
+            continue
+        action = re.match(r"^:(.*);$", line)
+        if action:
+            node = new_id("action")
+            _set_uml_node(graph, node, action.group(1).strip(), "process")
+            if prev:
+                graph.add_edge(prev, node)
+            prev = node
+            continue
+        condition = re.match(r"^(if|while)\s*\(([^)]*)\)", line, re.I)
+        if condition:
+            node = new_id("decision")
+            _set_uml_node(graph, node, condition.group(2).strip(), "decision")
+            if prev:
+                graph.add_edge(prev, node)
+            stack.append({"kind": condition.group(1).lower(), "ends": [], "node": node})
+            prev = node
+            continue
+        if re.match(r"^else\b", line, re.I):
+            if stack:
+                stack[-1]["ends"].append(prev)
+                prev = stack[-1]["node"]
+            continue
+        if re.match(r"^fork\b", line, re.I):
+            node = new_id("fork")
+            _set_uml_node(graph, node, "并行", "process")
+            if prev:
+                graph.add_edge(prev, node)
+            stack.append({"kind": "fork", "ends": [], "node": node})
+            prev = node
+            continue
+        if re.match(r"^fork again\b", line, re.I):
+            if stack:
+                stack[-1]["ends"].append(prev)
+                prev = stack[-1]["node"]
+            continue
+    graph.meta["activity"] = "basic"
+    if not graph.nodes:
+        graph.warnings.append("活动图解析后没有节点，检查 start/:action;/stop 语法。")
+
+
+def parse_plantuml(text: str, graph: Graph) -> None:
+    lines = _clean_uml_lines(text, plantuml=True)
+    low = "\n".join(lines).lower()
+    has_messages = bool(re.search(r"(?m)^\s*" + UML_ID + r"\s*(?:<--|<-|-->>|->>|-->|->)\s*" + UML_ID, low))
+    has_seq_decl = bool(re.search(r"(?m)^\s*(participant|boundary|control|queue|collections)\b", low))
+    if re.search(r"(?m)^\s*usecase\b", low):
+        parse_usecase_diagram(lines, graph, plantuml=True)
+    elif has_seq_decl or "->>" in low or "-->>" in low:
+        parse_sequence_diagram(lines, graph, plantuml=True)
+    elif re.search(r"(?m)^\s*(component|node|artifact|cloud|database|package|folder|frame)\b", low):
+        parse_component_diagram(lines, graph, plantuml=True)
+    elif re.search(r"(?m)^\s*state\b", low) or "[*]" in low:
+        parse_state_diagram(lines, graph, plantuml=True)
+    elif re.search(r"(?m)^\s*(abstract\s+class|class|interface|enum|object)\b", low):
+        parse_class_diagram(lines, graph, plantuml=True)
+    elif re.search(r"(?m)^\s*(start|stop)\b|^\s*:\s*.+;\s*$", low):
+        parse_activity_diagram(lines, graph, plantuml=True)
+    elif has_messages:
+        parse_sequence_diagram(lines, graph, plantuml=True)
+    else:
+        parse_class_diagram(lines, graph, plantuml=True)
+
+
+def detect_diagram_kind(text: str) -> str:
+    low = text.lower()
+    if "@startuml" in low:
+        return "plantuml"
+    if re.search(r"(?m)^\s*classdiagram\b", low):
+        return "uml-class"
+    if re.search(r"(?m)^\s*sequencediagram\b", low):
+        return "uml-sequence"
+    if re.search(r"(?m)^\s*statediagram(?:-v2)?\b", low):
+        return "uml-state"
+    if re.search(r"(?m)^\s*erdiagram\b", low):
+        return "uml-er"
+    if re.search(r"(?m)^\s*(flowchart|graph)\b", low):
+        return "flowchart"
+    if re.search(r"--\|>|<\|--|classDiagram|stateDiagram|erDiagram", text):
+        return "uml-class"
+    return ""
+
+
+def parse_mermaid_uml(kind: str, text: str, graph: Graph) -> None:
+    lines = _clean_uml_lines(text)
+    if kind == "uml-class":
+        parse_class_diagram(lines, graph)
+    elif kind == "uml-sequence":
+        parse_sequence_diagram(lines, graph)
+    elif kind == "uml-state":
+        parse_state_diagram(lines, graph)
+    elif kind == "uml-er":
+        parse_er_diagram(lines, graph)
+    else:
+        graph.warnings.append(f"未支持的 UML 图类型: {kind}")
+
+
+# ---------------------------------------------------------------------------
 # DOT
 # ---------------------------------------------------------------------------
 
@@ -569,7 +1198,17 @@ def _parse_text_payload(text: str, graph: Graph) -> bool:
         parse_dot(stripped, graph)
         graph.fmt = graph.fmt or "dot"
         return True
-    if "flowchart" in lowered or re.search(r"-->|---|-\.->", stripped):
+
+    kind = detect_diagram_kind(stripped)
+    if kind == "plantuml":
+        parse_plantuml(stripped, graph)
+        graph.fmt = graph.fmt or "plantuml"
+        return True
+    if kind.startswith("uml-"):
+        parse_mermaid_uml(kind, stripped, graph)
+        graph.fmt = graph.fmt or "mermaid"
+        return True
+    if kind == "flowchart" or "flowchart" in lowered or re.search(r"-->|---|-\.->", stripped):
         parse_mermaid(stripped, graph)
         graph.fmt = graph.fmt or "mermaid"
         return True
@@ -627,13 +1266,7 @@ def load(path: Path, graph: Graph) -> None:
         parse_xml(text, graph)
         graph.fmt = "xml"
         return
-    if "digraph" in lowered:
-        parse_dot(text, graph)
-        graph.fmt = "dot"
-        return
-    if "flowchart" in lowered or re.search(r"-->|---|-\.->", text):
-        parse_mermaid(text, graph)
-        graph.fmt = "mermaid"
+    if _parse_text_payload(text, graph):
         return
 
     # Last resort: look for JSON/XML embedded in a wrapper text.
@@ -691,20 +1324,23 @@ def finalize(graph: Graph) -> None:
         outdeg[edge["from"]] = outdeg.get(edge["from"], 0) + 1
         indeg[edge["to"]] = indeg.get(edge["to"], 0) + 1
 
+    uml = graph.diagram.startswith("uml-")
     for nid, node in graph.nodes.items():
         node["in"] = indeg.get(nid, 0)
         node["out"] = outdeg.get(nid, 0)
-        if node["in"] == 0 and node["type"] not in ("start", "end"):
-            node["type"] = "start"
-        elif node["out"] == 0 and node["type"] not in ("start", "end"):
-            node["type"] = "end"
+        if not uml:
+            if node["in"] == 0 and node["type"] not in ("start", "end"):
+                node["type"] = "start"
+            elif node["out"] == 0 and node["type"] not in ("start", "end"):
+                node["type"] = "end"
 
-    if not any(n["type"] == "start" for n in graph.nodes.values()) and graph.nodes:
-        first = graph.order[0]
-        graph.nodes[first]["type"] = "start"
-        graph.warnings.append(f"没有入度为 0 的起点，暂用 {first} 作为 start【推断】。")
-    if not any(n["type"] == "end" for n in graph.nodes.values()) and graph.nodes:
-        graph.warnings.append("没有出度为 0 的终点，检查是否漏边。")
+    if not uml:
+        if not any(n["type"] == "start" for n in graph.nodes.values()) and graph.nodes:
+            first = graph.order[0]
+            graph.nodes[first]["type"] = "start"
+            graph.warnings.append(f"没有入度为 0 的起点，暂用 {first} 作为 start【推断】。")
+        if not any(n["type"] == "end" for n in graph.nodes.values()) and graph.nodes:
+            graph.warnings.append("没有出度为 0 的终点，检查是否漏边。")
 
 
 def to_payload(graph: Graph) -> dict[str, Any]:
@@ -713,14 +1349,178 @@ def to_payload(graph: Graph) -> dict[str, Any]:
         "name": Path(graph.source).stem or "flow",
         "source": graph.source,
         "format": graph.fmt or "auto",
+        "diagram": graph.diagram,
         "nodes": [graph.nodes[nid] for nid in graph.order if nid in graph.nodes],
         "edges": graph.edges,
+        "meta": graph.meta,
         "warnings": graph.warnings,
     }
 
 
+def _mm_text(value: Any) -> str:
+    return str(value or "").replace('"', "'").replace("\n", " ")
+
+
+def _mm_prefix(node: dict[str, Any]) -> str:
+    directive = node.get("directive")
+    return f"{{{directive}}} " if directive else ""
+
+
+def _to_mermaid_class(graph: Graph) -> str:
+    lines = ["classDiagram"]
+    for nid in graph.order:
+        node = graph.nodes[nid]
+        uml_type = node.get("uml_type") or node.get("type") or "class"
+        attrs = node.get("attributes") or []
+        ops = node.get("operations") or []
+        stereo = {"interface": "<<interface>>", "enum": "<<enumeration>>"}.get(uml_type)
+        if not attrs and not ops and not stereo:
+            lines.append(f"    class {nid}")
+            continue
+        lines.append(f"    class {nid} {{")
+        if stereo:
+            lines.append(f"        {stereo}")
+        for attr in attrs:
+            lines.append(f"        {attr}")
+        for op in ops:
+            lines.append(f"        {op}")
+        lines.append("    }")
+    for edge in graph.edges:
+        kind = edge.get("kind", "association")
+        left, right = edge["from"], edge["to"]
+        lm = f'"{edge["left_multiplicity"]}" ' if edge.get("left_multiplicity") else ""
+        rm = f'"{edge["right_multiplicity"]}" ' if edge.get("right_multiplicity") else ""
+        label = f' : {edge["label"]}' if edge.get("label") else ""
+        if kind == "inheritance":
+            lines.append(f"    {right} <|-- {left}{label}")
+        elif kind == "realization":
+            lines.append(f"    {right} <|.. {left}{label}")
+        elif kind == "composition":
+            lines.append(f"    {left} {lm}*-- {rm}{right}{label}")
+        elif kind == "aggregation":
+            lines.append(f"    {left} {lm}o-- {rm}{right}{label}")
+        elif kind == "dependency":
+            lines.append(f"    {left} ..> {right}{label}")
+        else:
+            lines.append(f"    {left} {lm}--> {rm}{right}{label}")
+    return "\n".join(lines) + "\n"
+
+
+def _to_mermaid_sequence(graph: Graph) -> str:
+    lines = ["sequenceDiagram"]
+    keywords = {
+        "actor": "actor", "database": "database", "queue": "queue",
+        "participant": "participant", "boundary": "boundary",
+        "control": "control", "entity": "entity",
+    }
+    for nid in graph.order:
+        node = graph.nodes[nid]
+        keyword = keywords.get(node.get("type", ""), "participant")
+        lines.append(f"    {keyword} {nid}")
+    current_fragment = ""
+    for edge in sorted(graph.edges, key=lambda item: int(item.get("order", 0) or 0)):
+        fragment = edge.get("fragment", "")
+        if fragment != current_fragment:
+            if current_fragment:
+                lines.append("    end")
+            if fragment:
+                kind, _, label = fragment.partition(":")
+                lines.append(f"    {kind.strip()} {label.strip()}".rstrip())
+            current_fragment = fragment
+        kind = edge.get("message_kind", "sync")
+        arrow = {"return": "-->>", "async": "->>", "error": "-x"}.get(kind, "->")
+        text = _mm_text(edge.get("label", ""))
+        lines.append(f"    {edge['from']}{arrow}{edge['to']}: {text}")
+    if current_fragment:
+        lines.append("    end")
+    return "\n".join(lines) + "\n"
+
+
+def _to_mermaid_state(graph: Graph) -> str:
+    lines = ["stateDiagram-v2"]
+    pseudo = {"initial": "[*]", "final": "[*]"}
+    for edge in graph.edges:
+        left = edge["from"]
+        right = edge["to"]
+        left_node = graph.nodes.get(left, {})
+        right_node = graph.nodes.get(right, {})
+        left_label = pseudo.get(left_node.get("state_kind", ""), left)
+        right_label = pseudo.get(right_node.get("state_kind", ""), right)
+        label = edge.get("label", "")
+        if edge.get("guard"):
+            label += f" [{edge['guard']}]"
+        if edge.get("action"):
+            label += f" / {edge['action']}"
+        suffix = f" : {label}" if label else ""
+        lines.append(f"    {left_label} --> {right_label}{suffix}")
+    for nid in graph.order:
+        node = graph.nodes[nid]
+        if node.get("state_kind") in ("initial", "final"):
+            continue
+        if not any(nid in (edge["from"], edge["to"]) for edge in graph.edges):
+            lines.append(f"    state {nid}")
+    return "\n".join(lines) + "\n"
+
+
+def _to_mermaid_er(graph: Graph) -> str:
+    lines = ["erDiagram"]
+    for edge in graph.edges:
+        lc = edge.get("left_cardinality", "||")
+        rc = edge.get("right_cardinality", "o{")
+        label = f' : {edge["label"]}' if edge.get("label") else ""
+        lines.append(f"    {edge['from']} {lc}--{rc} {edge['to']}{label}")
+    for nid in graph.order:
+        attrs = graph.nodes[nid].get("attributes") or []
+        if not attrs:
+            continue
+        lines.append(f"    {nid} {{")
+        for attr in attrs:
+            lines.append(f"        {attr}")
+        lines.append("    }")
+    return "\n".join(lines) + "\n"
+
+
+def _to_mermaid_generic(graph: Graph, direction: str = "LR") -> str:
+    lines = [f"flowchart {direction}"]
+    for nid in graph.order:
+        node = graph.nodes[nid]
+        ntype = node.get("type", "process")
+        label = _mm_text(_mm_prefix(node) + (node.get("label") or nid))
+        if ntype in ("start", "end", "actor", "usecase"):
+            lines.append(f'    {nid}(["{label}"])')
+        elif ntype == "decision":
+            lines.append(f'    {nid}{{"{label}"}}')
+        elif ntype == "database":
+            lines.append(f'    {nid}[("{label}")]')
+        elif ntype in ("component", "subprocess"):
+            lines.append(f'    {nid}[["{label}"]]')
+        else:
+            lines.append(f'    {nid}["{label}"]')
+    for edge in graph.edges:
+        label = _mm_text(edge.get("label", ""))
+        if label:
+            lines.append(f'    {edge["from"]} -->|{label}| {edge["to"]}')
+        else:
+            lines.append(f'    {edge["from"]} --> {edge["to"]}')
+    return "\n".join(lines) + "\n"
+
+
+def to_mermaid_uml(graph: Graph) -> str:
+    if graph.diagram == "uml-class":
+        return _to_mermaid_class(graph)
+    if graph.diagram == "uml-sequence":
+        return _to_mermaid_sequence(graph)
+    if graph.diagram == "uml-state":
+        return _to_mermaid_state(graph)
+    if graph.diagram == "uml-er":
+        return _to_mermaid_er(graph)
+    return _to_mermaid_generic(graph)
+
+
 def to_mermaid(graph: Graph) -> str:
     finalize(graph)
+    if graph.diagram.startswith("uml-"):
+        return to_mermaid_uml(graph)
     shape_open = {
         "start": "([", "end": "([", "decision": "{", "database": "[(",
         "io": "[/", "subprocess": "[[",
@@ -760,6 +1560,7 @@ def print_tables(payload: dict[str, Any]) -> None:
     edges = payload["edges"]
     print(f"source: {payload['source']}")
     print(f"format: {payload['format']}")
+    print(f"diagram: {payload.get('diagram', 'flowchart')}")
     print(f"nodes: {len(nodes)}  edges: {len(edges)}")
     print()
     print("| 节点ID | 功能头 | 标签 | 类型 | 入度 | 出度 |")

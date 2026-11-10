@@ -65,6 +65,7 @@ FLOW-RULE: 顺序执行 S1→S9；每步验收通过后勾选 STATUS；判断按
 | 8 | 执行状态 | 唯一进度源 |
 | 9 | 待确认 | `[?]`、`【推断】`、冲突 |
 | 10 | 回环图 | Mermaid 重画，用于比对 |
+| 11 | 模型规格 | UML 图必填：模型元素 + 关系/消息 |
 | 附录 | flow-json | 机器可读图 |
 
 `## 0.` 之前只能有首 3 行和一级标题。一级标题建议：
@@ -265,6 +266,38 @@ flowchart TD
 ```
 ````
 
+## 10.5 UML 模型规格（§11）
+
+只有 `diagram` 为 `uml-*` 时需要。固定两张表：
+
+```markdown
+## 11. 模型规格
+
+### 11.1 模型元素
+
+| 元素ID | UML类型 | 名称 | 代码落点 | 实现要点 | 验收 |
+| --- | --- | --- | --- | --- | --- |
+| N1 | class | Order | `domain/order.py` | 属性 id/total；操作 submit | 可导入 |
+
+### 11.2 关系/消息
+
+| From | To | 关系/消息 | 顺序/多重性 | 实现 |
+| --- | --- | --- | --- | --- |
+| N1 | N2 | composition | 1..* | `Order.items` |
+| N1 | N2 | POST /orders | 1 | `api/orders.py` |
+```
+
+规则：
+
+- 11.1 覆盖 flow-json 的所有 `nodes[].id`；11.2 覆盖所有 `edges` 的 `from`→`to`。
+- 表头必须包含 `元素ID`、`UML类型`、`From`、`To`、`关系`/`消息`，否则校验器无法解析。
+- 类图：11.2 写 `多重性`（如 `1..*`）；实现列写字段/方法。
+- 时序图：11.2 写 `顺序`（1..N）且连续；实现列写调用/端点。
+- 状态机：11.2 写 `事件`、`守卫`、`动作`。
+- 用例图：11.1 区分 `actor`/`usecase`；11.2 写关联/include/extend。
+- 组件/部署：11.1 写组件/节点/artifact；11.2 写连接与协议。
+- ER：11.1 写实体与字段；11.2 写关系与基数。
+
 ## 11. flow-json（附录）
 
 放在文件末尾，用 ` ```flow-json ` 围栏。schema：
@@ -274,6 +307,7 @@ flowchart TD
   "name": "snapanswer",
   "task": "build-software",
   "source": "自动作答流程.ngm",
+  "diagram": "flowchart",
   "nodes": [
     {
       "id": "N1",
@@ -323,6 +357,9 @@ flowchart TD
 约束：
 
 - `nodes[].id` 唯一；`edges` 的 `from`/`to` 必须存在。
+- `diagram` 可选值：`flowchart`、`uml-class`、`uml-sequence`、`uml-state`、`uml-er`、`uml-usecase`、`uml-component`、`uml-deployment`、`uml-activity`。
+- UML 节点可带 `uml_type`、`attributes[]`、`operations[]`、`state_kind`、`stereotype`。
+- UML 边可带 `order`（时序）、`message_kind`、`guard`、`action`、`left_multiplicity`、`right_multiplicity`。
 - `nodes[].directive` 可选，必须是 `directive-catalog.md` 里的 tag；`directives` 可选，用于多个功能头。
 - `steps[].id` 与正文步骤集合完全一致；`steps[].node` 必须是节点。
 - 每个节点至少被一个步骤引用。

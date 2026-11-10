@@ -1,0 +1,13 @@
+@startuml
+actor User
+participant "Order API" as API
+database DB
+User -> API : POST /orders
+API -> DB : INSERT order
+DB --> API : order_id
+alt payment failed
+  API --> User : 402
+else success
+  API --> User : 201
+end
+@enduml
