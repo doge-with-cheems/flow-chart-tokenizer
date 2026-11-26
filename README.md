@@ -1,6 +1,6 @@
 # tokeize-ngm
 
-> 版本 1.1.0 ｜ 支持流程图 + UML
+> 版本 1.2.0 ｜ 支持流程图 + UML + 需求闸门
 
 把 `.ngm` 流程图、Mermaid、PlantUML、draw.io 的**流程图和 UML 图**编译成 **agent 可执行的构建逻辑 MD** 的 OpenCode 技能。
 
@@ -30,8 +30,10 @@
 - **流程图 + UML**：类图、时序图、状态机、ER、用例、组件、部署、活动图。
 - **悬空边还原**：draw.io 只画了 `source` + `targetPoint` 的边，按几何坐标还原目标节点，并标注 `【推断】`。
 - **首 3 行任务头**：`FLOW-TASK` / `FLOW-TARGET` / `FLOW-RULE`，下游 agent 先读任务类型再动手。
+- **需求闸门**：编译前先问 12 个问题（分两批），答案写进 §0.1；没确认不施工。
+- **变更控制**：新需求先分类，登记 §9.1 变更台账，只重跑受影响步骤，避免反复返工。
 - **功能头**：21 个基础指令 + 15 个 UML 指令（`{CLASS}`、`{MESSAGE}`、`{STATE}` 等），参与类型判定和语义校验。
-- **图论 + 模型自检**：节点覆盖、死端、可达性、回边、STATUS、flow-json、UML 模型表覆盖。
+- **图论 + 模型自检**：节点覆盖、死端、可达性、回边、STATUS、flow-json、UML 模型表覆盖、需求追踪矩阵。
 
 ## 目录
 
@@ -44,6 +46,7 @@ tokeize-ngm/
 ├─ install.ps1                    # 安装到本机 OpenCode 技能目录
 ├─ references/
 │  ├─ logic-md-contract.md        # 逻辑 MD 契约：首 3 行、章节、字段、flow-json
+│  ├─ intake-questions.md         # 12 个需求澄清问题 + 设计确认 + 变更控制
 │  ├─ directive-catalog.md        # 功能头目录与校验规则
 │  ├─ uml-support.md              # UML 支持矩阵、限制、施工顺序
 │  ├─ build-mapping.md            # 图元素 → 软件结构
@@ -54,19 +57,23 @@ tokeize-ngm/
 │  ├─ ngm_tokens.py               # 流程图 + UML tokenizer
 │  ├─ logic_check.py              # 逻辑 MD / UML 校验器
 │  └─ directives.py               # 功能头目录（两个脚本共用）
-└─ examples/
-   ├─ 自动作答流程.ngm             # 真实 .ngm 输入
-   ├─ 自动作答流程.logic.md        # 编译产物，14 步 / 13 边
-   ├─ uml-class.mmd                # Mermaid 类图
-   ├─ uml-sequence.puml            # PlantUML 时序图
-   ├─ uml-state.mmd                # Mermaid 状态机
-   └─ uml-er.mmd                   # Mermaid ER 图
+├─ examples/
+│  ├─ 自动作答流程.ngm             # 真实 .ngm 输入
+│  ├─ 自动作答流程.logic.md        # 编译产物，14 步 / 13 边
+│  ├─ uml-class.mmd                # Mermaid 类图
+│  ├─ uml-sequence.puml            # PlantUML 时序图
+│  ├─ uml-state.mmd                # Mermaid 状态机
+│  └─ uml-er.mmd                   # Mermaid ER 图
+└─ tests/
+   ├─ test_examples.py             # 样例端到端
+   └─ test_precision.py            # 需求确认/变更冲突/节点表漂移负例
 ```
 
 验证全部样例：
 
 ```powershell
 python tests\test_examples.py
+python tests\test_precision.py   # 缺需求确认/变更冲突/节点表漂移等负例
 ```
 
 ## 环境
@@ -111,7 +118,7 @@ python scripts\logic_check.py "examples\自动作答流程.logic.md"
 
 ```text
 nodes: 14  edges: 13
-PASS 23  FAIL 0  WARN 0
+PASS 29  FAIL 0  WARN 0
 ```
 
 UML：
@@ -133,8 +140,8 @@ python scripts\logic_check.py "references\example-uml-sequence.md"
 UML 样例结果：
 
 ```text
-uml-class      PASS 25  FAIL 0
-uml-sequence   PASS 26  FAIL 0
+uml-class      PASS 31  FAIL 0
+uml-sequence   PASS 32  FAIL 0
 ```
 
 ## 逻辑 MD 首 3 行
@@ -175,6 +182,22 @@ FLOW-RULE: 顺序执行 S1→S14；每步验收通过后勾选 STATUS；判断�
 | UML | `{CLASS}` `{IFACE}` `{ENUM}` `{ACTOR}` `{USECASE}` `{COMPONENT}` `{SERVICE}` `{STATE}` `{ENTITY}` `{MESSAGE}` `{RELATION}` `{TRANSITION}` `{TABLE}` `{API}` `{REPO}` |
 
 `{STORAGE}` 是 `{STORGE}` 的别名。完整语义、组合规则和校验行为见 `references/directive-catalog.md`。
+
+## 需求澄清与变更控制
+
+编译逻辑 MD 前，skill 会要求先问两批问题（完整题库见 `references/intake-questions.md`）：
+
+- **第一批**：作业模式、`FLOW-TASK`、交付物、范围边界、平台与栈、数据与依赖。
+- **第二批**：UI/交互、验收门槛、非功能约束、部署与回滚、变更审批、优先级与工期。
+
+答案写进逻辑 MD 的 `### 0.1 需求确认`，同时生成 `### 0.2 非目标` 和 `### 0.3 追踪矩阵`。没有完成这三张表，不开始编译；`FLOW-RULE` 写“先完成需求确认再施工”会启用严格校验。
+
+用户中途改需求时：
+
+1. 先分类：澄清 / 范围变更 / 缺陷 / 技术栈变更。
+2. 在 `### 9.1 变更台账` 登记 CHG、影响 S、批准人、状态。
+3. 只回退并重跑受影响的 S 与 G，其余 `[x]` 保持。
+4. 改完 `logic_check.py` 必须 `FAIL 0`。
 
 ## 已知边界
 

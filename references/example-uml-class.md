@@ -1,6 +1,6 @@
 FLOW-TASK: build-software/uml-class
 FLOW-TARGET: 订单领域模型 | source: uml-class.mmd | stack: Python 3.10+ / dataclasses / typing | entry: S1 | end: S8
-FLOW-RULE: 顺序执行 S1→S8；每步验收通过后勾选 STATUS；类/关系按 §11 模型表实现；范围外变更先问
+FLOW-RULE: 先完成需求确认再施工；顺序执行 S1→S8；每步验收通过后勾选 STATUS；类/关系按 §11 模型表实现；范围外变更先问
 
 # 订单领域模型 · 构建逻辑
 
@@ -10,8 +10,32 @@ FLOW-RULE: 顺序执行 S1→S8；每步验收通过后勾选 STATUS；类/关�
 
 - **构建什么**: 订单领域模型：`Order` 聚合根、`OrderItem` 实体、`Repository` 接口、`OrderRepository` 实现、`Customer` 与 `Payment` 依赖。
 - **成功标志**: 领域类可导入；`Order` 能聚合 `OrderItem`；`OrderRepository` 实现 `Repository`；依赖方向符合类图。
-- **非目标**: 不实现数据库驱动、不实现 HTTP API、不实现支付渠道。
 - **运行环境**: Python 3.10+，只用标准库 `dataclasses` / `typing`。
+
+### 0.1 需求确认
+
+| REQ | 需求 | 来源 | 优先级 | 验收标准 | 状态 | 确认 |
+| --- | --- | --- | --- | --- | --- | --- |
+| REQ-01 | Order 聚合 OrderItem，并实现 submit() | Q2/Q5 + 图上 N1/N2 | P0 | `Order.items` 非空；`submit()` 返回 bool | 已确认 | 用户 2026-11-26 |
+| REQ-02 | Repository 接口 + OrderRepository 实现 | Q5 + 图上 N3/N4 | P0 | `issubclass(OrderRepository, Repository)` 为真 | 已确认 | 用户 2026-11-26 |
+| REQ-03 | Customer 关联、Payment 依赖方向正确 | Q4 + 图上 N5/N6 | P1 | 领域层不导入 infra；`Order` 只依赖 Payment 协议 | 已确认 | 用户 2026-11-26 |
+| REQ-04 | 领域模型可测试、可交付 | Q8 + 图上 S7/S8 | P1 | `pytest tests/test_order_model.py -q` 退出码 0 | 已确认 | 用户 2026-11-26 |
+
+### 0.2 非目标
+
+- 不实现数据库驱动、ORM 或迁移脚本。
+- 不实现 HTTP API、鉴权或序列化协议。
+- 不实现具体支付渠道，只留端口。
+- 不做库存扣减与分布式事务。
+
+### 0.3 追踪矩阵
+
+| REQ | 步骤 | 落点 | 验收证据 | 门槛 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| REQ-01 | S1,S2 | `domain/order.py`、`domain/order_item.py` | 聚合与数量校验 | G1,G2 | 待验收 |
+| REQ-02 | S3,S4 | `domain/repository.py`、`infra/order_repository.py` | 保存后可查回 | G1 | 待验收 |
+| REQ-03 | S5,S6 | `domain/customer.py`、`domain/payment.py` | 依赖方向检查 | G3 | 待验收 |
+| REQ-04 | S7,S8 | `tests/test_order_model.py` | pytest 退出码 0 | G2 | 待验收 |
 
 ## 1. 执行契约
 
@@ -20,6 +44,25 @@ FLOW-RULE: 顺序执行 S1→S8；每步验收通过后勾选 STATUS；类/关�
 - 类图的属性、操作、关系以 §11 模型表为准；不得增删模型元素。
 - 依赖方向必须与类图一致：`Order → Payment` 是依赖，不是组合。
 - 遇到模型表与实际代码冲突，停止并写 §9。
+- 范围外变更先登记 `### 9.1 变更台账`，只重跑受影响步骤。
+
+### 1.1 Definition of Ready
+
+- [x] 任务类型与交付物已确认。
+- [x] §0.1 没有“待确认”需求。
+- [x] §11 模型表已确认。
+- [x] 范围外内容已写入 §0.2。
+- [x] 每条需求有可观察的验收标准。
+- [x] 依赖方向与类图一致。
+
+### 1.2 Definition of Done
+
+- [ ] §8 所有应执行步骤为 `[x]`。
+- [ ] §7 每个 G 有命令、结果和证据。
+- [ ] §0.3 每条需求都有追踪行。
+- [ ] §11 模型表与代码符号一致。
+- [ ] `### 9.1 变更台账` 没有“待重跑”。
+- [ ] 交付说明列明未实现范围。
 
 ## 2. 节点清单
 
@@ -161,6 +204,13 @@ FLOW-RULE: 顺序执行 S1→S8；每步验收通过后勾选 STATUS；类/关�
 - 【推断】`Repository` 使用 Python `Protocol` 还是抽象基类；示例按 `Generic[T]` 抽象接口实现。
 - 【推断】`Order.items` 的多重性 `1..*` 按“至少一个订单行”实现，构造时校验非空。
 - [`?`] `Payment` 在原图中是类还是接口不明确；示例按端口协议实现。
+
+### 9.1 变更台账
+
+| CHG | 日期 | 类型 | 描述 | 命中REQ/步骤 | 影响步骤 | 批准 | 状态 | 关闭证据 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CHG-01 | 2026-11-26 | 澄清 | Repository 用 Generic[T] 抽象接口，不用 Protocol | REQ-02 | — | 用户 | 已关闭 | §0.1 REQ-02 |
+| CHG-02 | 2026-11-26 | 范围 | Payment 只做端口，不实现具体网关 | REQ-03 | S6 | 用户 | 已关闭 | §0.2 非目标 |
 
 ## 10. 回环图
 

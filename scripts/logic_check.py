@@ -310,7 +310,7 @@ def check_steps(steps: dict[str, dict[str, Any]], report: Report, uml: bool = Fa
             report.fail(f"{sid} 触发条件", "分支步骤必须写 `- 触发: Sx = 是/否`", line)
 
         if is_end and step["targets"]:
-            report.warn(f"{sid} 结束步骤", "结束步骤不应再有下一步", line)
+            report.fail(f"{sid} 结束步骤", "结束步骤不能再有下一步", line)
 
         if not is_decision and not is_or and not is_end and len(step["targets"]) > 1 and not uml:
             report.warn(f"{sid} 多去向", "非判断步骤出现多个去向，确认不是把判断写成了处理", line)
@@ -437,6 +437,264 @@ HINTS: dict[str, tuple[tuple[str, ...], str]] = {
     "REPO": (("仓储", "repository", "查询", "保存", "写入"),
              "仓储步骤应说明查询与保存接口"),
 }
+
+
+def _sub_block(lines: list[str], start: int, end: int, regex: str) -> tuple[int, int, str] | None:
+    for i in range(start, end):
+        if re.match(regex, lines[i].strip()):
+            j = i + 1
+            while j < end and not re.match(r"^#{2,3}\s+", lines[j].strip()):
+                j += 1
+            return i, j, lines[i].strip()
+    return None
+
+
+def _status_map(lines: list[str], sections: dict[int, tuple[int, int, str]]) -> dict[str, bool]:
+    status: dict[str, bool] = {}
+    if 8 not in sections:
+        return status
+    start, end, _ = sections[8]
+    for i in range(start + 1, end):
+        match = re.match(r"^\s*-\s*\[([ xX])\]\s*(S\d+)\b", lines[i])
+        if match:
+            status[match.group(2)] = match.group(1).lower() == "x"
+    return status
+
+
+def check_requirement_confirmation(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                                   report: Report, strict: bool = False) -> None:
+    if 0 not in sections:
+        return
+    start, end, _ = sections[0]
+    block = _sub_block(lines, start, end, r"^###\s+0\.1\s+需求确认")
+    if not block:
+        (report.fail if strict else report.warn)(
+            "需求确认", "缺少 `### 0.1 需求确认`；未确认需求就编译会导致返工", start + 1)
+        return
+    bstart, bend, _ = block
+    tables = _markdown_tables(lines, bstart, bend)
+    table = None
+    for header, rows in tables:
+        joined = " ".join(header)
+        if "REQ" in joined and "需求" in joined and "验收" in joined:
+            table = (header, rows)
+            break
+    if table is None:
+        (report.fail if strict else report.warn)(
+            "需求确认", "§0.1 缺少 `REQ | 需求 | 验收标准 | 状态` 表", bstart + 1)
+        return
+    header, rows = table
+    required = ("REQ", "需求", "来源", "优先级", "验收标准", "状态", "确认")
+    missing = [name for name in required if not any(name in item for item in header)]
+    if missing:
+        report.fail("需求确认", f"缺少列: {', '.join(missing)}", bstart + 1)
+        return
+    if len(rows) < 3:
+        (report.fail if strict else report.warn)(
+            "需求确认", f"至少确认 3 条需求，当前 {len(rows)} 条", bstart + 1)
+        return
+
+    def index_of(name: str) -> int:
+        return next(i for i, item in enumerate(header) if name in item)
+
+    req_idx = index_of("REQ")
+    acceptance_idx = index_of("验收标准")
+    status_idx = index_of("状态")
+    confirm_idx = index_of("确认")
+    status = _status_map(lines, sections)
+    has_done = any(status.values())
+    pending: list[str] = []
+    for row in rows:
+        if len(row) <= max(req_idx, acceptance_idx, status_idx, confirm_idx):
+            continue
+        req = row[req_idx].strip() or "?"
+        acceptance = row[acceptance_idx].strip()
+        state = row[status_idx].strip().lower()
+        if not acceptance or acceptance in ("[?]", "?", "待定", "TBD", "TODO"):
+            report.fail("需求确认", f"{req} 缺少可观察的验收标准", bstart + 1)
+        if state not in ("已确认", "confirmed", "已取消", "cancelled", "取消"):
+            pending.append(req)
+        if not row[confirm_idx].strip():
+            report.warn("需求确认", f"{req} 缺少确认人/日期", bstart + 1)
+    if pending:
+        if has_done:
+            report.fail("需求确认", f"这些需求未确认但已有步骤勾选: {', '.join(pending)}", bstart + 1)
+        else:
+            report.warn("需求确认", f"这些需求仍是待确认: {', '.join(pending)}", bstart + 1)
+    else:
+        report.ok("需求确认", f"{len(rows)} 条需求已确认", bstart + 1)
+
+
+def check_non_goals(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                    report: Report, strict: bool = False) -> None:
+    if 0 not in sections:
+        return
+    start, end, _ = sections[0]
+    block = _sub_block(lines, start, end, r"^###\s+0\.2\s+非目标")
+    if not block:
+        (report.fail if strict else report.warn)(
+            "非目标", "缺少 `### 0.2 非目标`；不写“这次不做什么”容易范围蔓延", start + 1)
+        return
+    bstart, bend, _ = block
+    bullets = [line for line in lines[bstart + 1:bend] if line.strip().startswith("- ")]
+    if not bullets:
+        report.fail("非目标", "§0.2 至少写 1 条“本次不做”的具体项", bstart + 1)
+    else:
+        report.ok("非目标", f"{len(bullets)} 条非目标", bstart + 1)
+
+
+def check_change_log(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                     steps: dict[str, dict[str, Any]], report: Report, strict: bool = False) -> None:
+    if 9 not in sections:
+        return
+    start, end, _ = sections[9]
+    block = _sub_block(lines, start, end, r"^###\s+9\.1\s+变更台账")
+    if not block:
+        (report.fail if strict else report.warn)(
+            "变更台账", "缺少 `### 9.1 变更台账`；用户中途改需求时无法追踪影响范围", start + 1)
+        return
+    bstart, bend, _ = block
+    tables = _markdown_tables(lines, bstart, bend)
+    table = None
+    for header, rows in tables:
+        joined = " ".join(header)
+        if "CHG" in joined and "影响步骤" in joined:
+            table = (header, rows)
+            break
+    if table is None:
+        report.fail("变更台账", "缺少 `CHG | 日期 | 类型 | 影响步骤 | 状态` 表", bstart + 1)
+        return
+    header, rows = table
+    required = ("CHG", "日期", "类型", "描述", "影响步骤", "状态")
+    missing = [name for name in required if not any(name in item for item in header)]
+    if missing:
+        report.fail("变更台账", f"缺少列: {', '.join(missing)}", bstart + 1)
+        return
+
+    def index_of(name: str) -> int:
+        return next(i for i, item in enumerate(header) if name in item)
+
+    chg_idx = index_of("CHG")
+    date_idx = index_of("日期")
+    type_idx = index_of("类型")
+    step_idx = index_of("影响步骤")
+    state_idx = index_of("状态")
+    approve_idx = next((i for i, item in enumerate(header) if "批准" in item), None)
+    evidence_idx = next((i for i, item in enumerate(header) if "关闭证据" in item), None)
+    status = _status_map(lines, sections)
+    seen: set[str] = set()
+    conflicts: list[str] = []
+    for row in rows:
+        if len(row) <= max(chg_idx, date_idx, type_idx, step_idx, state_idx):
+            continue
+        chg = row[chg_idx].strip() or "?"
+        if chg in seen:
+            report.fail("变更台账", f"CHG 编号重复: {chg}", bstart + 1)
+        seen.add(chg)
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", row[date_idx].strip()):
+            report.warn("变更台账", f"{chg} 日期建议用 YYYY-MM-DD", bstart + 1)
+        change_type = row[type_idx].strip().lower()
+        if change_type not in ("澄清", "范围", "缺陷", "技术栈", "验收", "clarify", "scope", "bug"):
+            report.warn("变更台账", f"{chg} 类型建议用 澄清/范围/缺陷/技术栈/验收", bstart + 1)
+        affected = re.findall(r"S\d+", row[step_idx])
+        unknown = [sid for sid in affected if sid not in steps]
+        if unknown:
+            report.fail("变更台账", f"{chg} 影响步骤不存在: {', '.join(unknown)}", bstart + 1)
+        state = row[state_idx].strip().lower()
+        needs_rerun = state in ("进行中", "待重跑", "pending", "rerun", "in progress")
+        if needs_rerun:
+            for sid in affected:
+                if status.get(sid):
+                    conflicts.append(sid)
+        if change_type in ("范围", "scope") and approve_idx is not None:
+            if len(row) <= approve_idx or not row[approve_idx].strip():
+                report.fail("变更台账", f"{chg} 是范围变更但缺少批准人", bstart + 1)
+        if state in ("已关闭", "closed") and evidence_idx is not None:
+            if len(row) <= evidence_idx or not row[evidence_idx].strip():
+                report.warn("变更台账", f"{chg} 已关闭但缺少关闭证据", bstart + 1)
+    if conflicts:
+        report.fail("变更/状态冲突",
+                    f"这些步骤在变更台账中需重跑，但 STATUS 仍为 [x]: {', '.join(sorted(set(conflicts)))}",
+                    bstart + 1)
+    else:
+        report.ok("变更台账", f"{len(rows)} 条变更，状态与 STATUS 一致", bstart + 1)
+
+
+def check_traceability(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                       steps: dict[str, dict[str, Any]], report: Report, strict: bool = False) -> None:
+    if 0 not in sections:
+        return
+    start, end, _ = sections[0]
+    block = _sub_block(lines, start, end, r"^###\s+0\.3\s+追踪矩阵")
+    if not block:
+        (report.fail if strict else report.warn)(
+            "追踪矩阵", "缺少 `### 0.3 追踪矩阵`；需求→步骤→验收无法追踪", start + 1)
+        return
+    bstart, bend, _ = block
+    tables = _markdown_tables(lines, bstart, bend)
+    table = None
+    for header, rows in tables:
+        joined = " ".join(header)
+        if "REQ" in joined and "步骤" in joined and ("验收" in joined or "门槛" in joined):
+            table = (header, rows)
+            break
+    if table is None:
+        report.fail("追踪矩阵", "缺少 `REQ | 步骤 | 落点 | 验收证据 | 门槛 | 状态` 表", bstart + 1)
+        return
+    header, rows = table
+
+    def index_of(name: str) -> int:
+        return next((i for i, item in enumerate(header) if name in item), -1)
+
+    req_idx = index_of("REQ")
+    step_idx = index_of("步骤")
+    gate_idx = index_of("门槛")
+    state_idx = index_of("状态")
+    covered: set[str] = set()
+    reqs: set[str] = set()
+    for row in rows:
+        if len(row) > step_idx:
+            covered.update(re.findall(r"S\d+", row[step_idx]))
+        if req_idx >= 0 and len(row) > req_idx:
+            reqs.update(re.findall(r"REQ-\d+", row[req_idx]))
+    missing = sorted(set(steps) - covered, key=lambda sid: int(sid[1:]))
+    unknown = sorted(covered - set(steps), key=lambda sid: int(sid[1:]))
+    if missing:
+        report.fail("追踪矩阵", f"这些步骤没有追踪行: {', '.join(missing)}", bstart + 1)
+    if unknown:
+        report.fail("追踪矩阵", f"追踪矩阵包含不存在的步骤: {', '.join(unknown)}", bstart + 1)
+    if gate_idx >= 0 and 7 in sections:
+        gate_text = "\n".join(lines[sections[7][0]:sections[7][1]])
+        known_gates = set(re.findall(r"###\s+(G\d+)", gate_text))
+        referenced: set[str] = set()
+        for row in rows:
+            if len(row) > gate_idx:
+                referenced.update(re.findall(r"G\d+", row[gate_idx]))
+        unknown_gates = sorted(referenced - known_gates)
+        if unknown_gates:
+            report.fail("追踪矩阵", f"引用了不存在的验收门槛: {', '.join(unknown_gates)}", bstart + 1)
+
+    # Requirements in §0.1 must be covered, and no ghost requirements.
+    req_block = _sub_block(lines, start, end, r"^###\s+0\.1\s+需求确认")
+    if req_block:
+        tables = _markdown_tables(lines, req_block[0], req_block[1])
+        declared: set[str] = set()
+        for header2, rows2 in tables:
+            if not any("REQ" in item for item in header2):
+                continue
+            for row in rows2:
+                if row:
+                    declared.update(re.findall(r"REQ-\d+", row[0]))
+        missing_reqs = sorted(declared - reqs)
+        ghost_reqs = sorted(reqs - declared)
+        if missing_reqs:
+            report.fail("追踪矩阵", f"这些需求没有追踪行: {', '.join(missing_reqs)}", bstart + 1)
+        if ghost_reqs:
+            report.fail("追踪矩阵", f"追踪矩阵引用了未登记的需求: {', '.join(ghost_reqs)}", bstart + 1)
+
+    if not missing and not unknown:
+        report.ok("追踪矩阵", f"{len(rows)} 行，覆盖 {len(covered)} 个步骤", bstart + 1)
+
 
 
 def check_directives(step: dict[str, Any], loop_text: str,
@@ -660,6 +918,61 @@ def _cell_id(value: str) -> str:
     return match.group(0) if match else text
 
 
+def check_source_tables(lines: list[str], sections: dict[int, tuple[int, int, str]],
+                        graph: dict[str, Any], report: Report) -> None:
+    if 2 not in sections or 3 not in sections:
+        return
+    node_ids = {str(nid) for nid in graph.get("node_ids", [])}
+    edges = {(str(edge["from"]), str(edge["to"])) for edge in graph.get("edges", [])}
+
+    node_ids_in_table: set[str] = set()
+    node_table_found = False
+    start, end, _ = sections[2]
+    for header, rows in _markdown_tables(lines, start, end):
+        if any("节点ID" in item for item in header):
+            node_table_found = True
+            for row in rows:
+                if row:
+                    node_ids_in_table.add(_cell_id(row[0]))
+    if not node_table_found:
+        report.warn("节点表", "§2 没有找到 `节点ID` 表，无法与 flow-json 对照", start + 1)
+    elif node_ids_in_table != node_ids:
+        missing = sorted(node_ids - node_ids_in_table)
+        extra = sorted(node_ids_in_table - node_ids)
+        detail = []
+        if missing:
+            detail.append("表缺 " + ", ".join(missing))
+        if extra:
+            detail.append("表多 " + ", ".join(extra))
+        report.fail("节点表", "§2 与 flow-json 不一致：" + "；".join(detail), start + 1)
+    else:
+        report.ok("节点表", f"§2 与 flow-json 的 {len(node_ids)} 个节点一致", start + 1)
+
+    edge_pairs: set[tuple[str, str]] = set()
+    edge_table_found = False
+    start, end, _ = sections[3]
+    for header, rows in _markdown_tables(lines, start, end):
+        if any("From" in item for item in header) and any("To" in item for item in header):
+            edge_table_found = True
+            for row in rows:
+                if len(row) >= 2:
+                    edge_pairs.add((_cell_id(row[0]), _cell_id(row[1])))
+    if not edge_table_found:
+        report.warn("边表", "§3 没有找到 `From/To` 表，无法与 flow-json 对照", start + 1)
+    elif edge_pairs != edges:
+        missing = sorted(edges - edge_pairs)
+        extra = sorted(edge_pairs - edges)
+        detail = []
+        if missing:
+            detail.append("表缺 " + ", ".join(f"{a}→{b}" for a, b in missing))
+        if extra:
+            detail.append("表多 " + ", ".join(f"{a}→{b}" for a, b in extra))
+        report.fail("边表", "§3 与 flow-json 不一致：" + "；".join(detail), start + 1)
+    else:
+        report.ok("边表", f"§3 与 flow-json 的 {len(edges)} 条边一致", start + 1)
+
+
+
 def check_uml_model(lines: list[str], sections: dict[int, tuple[int, int, str]],
                     steps: dict[str, dict[str, Any]], graph: dict[str, Any], report: Report) -> None:
     if 11 not in sections:
@@ -753,9 +1066,10 @@ def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], repo
         if not isinstance(node, dict) or not node.get("id"):
             report.fail("flow-json 节点", "每个节点必须有 id", line_offset)
             continue
-        if node["id"] in node_ids:
-            report.fail("flow-json 节点", f"节点 id 重复: {node['id']}", line_offset)
-        node_ids.add(str(node["id"]))
+        node_id = str(node["id"])
+        if node_id in node_ids:
+            report.fail("flow-json 节点", f"节点 id 重复: {node_id}", line_offset)
+        node_ids.add(node_id)
 
     for node in nodes:
         if not isinstance(node, dict):
@@ -779,8 +1093,9 @@ def check_flow_json(data: dict[str, Any], steps: dict[str, dict[str, Any]], repo
         if not isinstance(edge, dict) or not edge.get("from") or not edge.get("to"):
             report.fail("flow-json 边", "每条边必须有 from/to", line_offset)
             continue
-        if edge["from"] not in node_ids or edge["to"] not in node_ids:
-            report.fail("flow-json 边", f"边 {edge['from']}→{edge['to']} 引用了不存在的节点", line_offset)
+        src, dst = str(edge["from"]), str(edge["to"])
+        if src not in node_ids or dst not in node_ids:
+            report.fail("flow-json 边", f"边 {src}→{dst} 引用了不存在的节点", line_offset)
             continue
         edges_clean.append(edge)
 
@@ -1005,6 +1320,7 @@ def main(argv: list[str] | None = None) -> int:
     lines = text.splitlines()
     report = Report()
     uml = bool(re.search(r'"diagram"\s*:\s*"uml-', text))
+    strict_intake = "需求确认" in lines[2] if len(lines) > 2 else False
     task_type = check_header(lines, report)
     sections = section_ranges(lines)
     check_sections(lines, sections, report, uml)
@@ -1012,6 +1328,10 @@ def main(argv: list[str] | None = None) -> int:
     check_steps(steps, report, uml)
     check_status(lines, steps, sections, report)
     check_gates(lines, sections, report)
+    check_requirement_confirmation(lines, sections, report, strict_intake)
+    check_non_goals(lines, sections, report, strict_intake)
+    check_traceability(lines, sections, steps, report, strict_intake)
+    check_change_log(lines, sections, steps, report, strict_intake)
 
     data, line_offset = load_flow_json(text)
     graph: dict[str, Any] = {}
@@ -1021,6 +1341,7 @@ def main(argv: list[str] | None = None) -> int:
         if 9 not in sections and not data.get("warnings"):
             pass
         graph = check_flow_json(data, steps, report, line_offset, uml)
+        check_source_tables(lines, sections, graph, report)
         if uml:
             check_uml_model(lines, sections, steps, graph, report)
     loop_text = ""
@@ -1040,7 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: no flow-json", file=sys.stderr)
             return 1
         print(to_mermaid(data), end="")
-        return 0
+        return 0 if report.fail_count == 0 else 1
 
     if args.json:
         payload = {
